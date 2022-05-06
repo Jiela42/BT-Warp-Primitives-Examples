@@ -49,7 +49,6 @@ __global__ void naiveGlobalMem(float * a, float * b, float* res, int size){
     }
 }
 
-
 __global__ void naiveSharedMem(float * a, float * b, float* res, int size){
     __shared__ float rab[3 * 32 * 32];
 
@@ -296,7 +295,9 @@ void callNaiveSharedMem(int size, int threads){
     // vecInit (a, size);
     // vecInit (b, size);
 
-    vecInitOnes(a, size);
+    vecInitGauss(a, size);
+
+    // vecInitOnes(a, size);
     vecInitOnes(b, size);
 
     cudaMemcpy(d_a, a, sizeof(float)*size , cudaMemcpyHostToDevice);
@@ -323,8 +324,12 @@ void callNaiveSharedMem(int size, int threads){
     //     printf("res[%d] = %f\n", i, res[i]);
     // }
     
-    if (res[0] != (float)size){
-        printf("The result is %f, but should be %f \n", res[0],(float) size);
+    float n = size - 1.0;
+    float expectedRes = (pow(n, 2.0) + n) / 2;
+    float diff = res[0] - (float)size;
+
+    if (diff > 1.0 || diff < -1.0){
+        printf("The result is %f, but should be %f, difference is %f \n", res[0], expectedRes, diff);
     }
 
     cudaFree(d_a);
