@@ -50,19 +50,33 @@ __global__ void naiveGlobalMem(float * a, float * b, float* res, int size){
 }
 
 __global__ void naiveSharedMem(float * a, float * b, float* res, int size){
-    __shared__ float rab[3 * 32 * 32];
 
+
+    // There are 3 Arrays, each of size 64 elements
+    __shared__ float rab[3 * 64];
+    int maxIndx = 3 * 64 - 1;
     int id = threadIdx.x;
     
-    int s_a_i = id + 32 * 32;
-    int s_b_i = id + (2 * 32 * 32);
-    
+    int s_a_i = id + size;
+    int s_b_i = id + (2 * size);
+
+    if (s_b_i + 32 > maxIndx){
+        printf("I am Thread %d, I tried to access s_b_i + size = %d, but the Max Index is: %d \n", id, s_b_i + 32, maxIndx);
+    }
+    // we have 2*threads many elements, so we need that each threads adds 2 pairs of elements!
     rab[s_a_i] = a[id];
     rab[s_b_i] = b[id];
+    rab[s_a_i + 32] = a[id + 32];
+    rab[s_b_i + 32] = b[id + 32];
 
-    rab[id] = rab[s_a_i] * rab[s_b_i];
 
-    int stepSize = size/2;
+    // if (id == 0){
+    //     printf("rab[s_a_i] = rab[%d] = %f\n rab[s_b_i] = rab[%d] = %f\n", s_a_i,rab[s_a_i], s_b_i, rab[s_b_i]);
+    //     printf("rab[s_a_i+4] = rab[%d] = %f\n rab[s_b_i+4] = rab[%d] = %f\n", s_a_i +4,rab[s_a_i+4], s_b_i+4, rab[s_b_i+4]);
+    // }
+    // note that, we have 2*threads many elements! Hence we do the first iteration here!
+    rab[id] = (rab[s_a_i] * rab[s_b_i]) + (rab[s_a_i + 32] * rab[s_b_i + 32]);
+    int stepSize = size/4;
     
     int iterations = 1;
     int logSize = size;
@@ -71,19 +85,22 @@ __global__ void naiveSharedMem(float * a, float * b, float* res, int size){
         logSize /= 2;
         iterations++;
     }
-
-    for(int i = 0; i < iterations; i++){
-        if (id <stepSize){
-            // printf("I am Tread %d, this is iteration %d, and I will add cell %d\n", id, i, id+ stepSize);
+    //printf("rab[%d] = %f\n", id, rab[id]);
+    __syncthreads();
+    for(int i = 1; i < iterations; i++){
+        if (id < stepSize){
+            // printf("I am Tread %d, this is iteration %d, and I will add cell %d\n", id, i, id + stepSize);
+            // printf("I am Tread %d, my value is %f and I will add %f\n", id, rab[id], rab[id+ stepSize]);
             rab[id] += rab[id + stepSize];
             stepSize /= 2;
         }
+        
+       // printf("rab[%d] = %f\n", id, rab[id]);
         __syncthreads();
     }
 
-    if (id == 0){
+    
         res[id] = rab[id];
-    }
 }
 
 __global__ void naiveWarpRed(float* a, float* b, float* res, int size){
@@ -99,7 +116,7 @@ __global__ void naiveWarpRed(float* a, float* b, float* res, int size){
         iterations++;
     }
 
-    float mySum = a[id] * b [id];
+    float mySum = a [id] * b [id];
 
     for(int i = 0; i < iterations-1; i++){
         int condition = id < stepSize;
@@ -108,6 +125,7 @@ __global__ void naiveWarpRed(float* a, float* b, float* res, int size){
             mySum += __shfl_up_sync(mask, mySum, stepSize);
             stepSize /= 2;
         }
+        // no sync here, because the shuffle syncs!
     }
     if(id == 0){
         res[id] = mySum;
@@ -307,7 +325,8 @@ void callNaiveSharedMem(int size, int threads){
     // to support a size bigger than 32 we need to
     // basically do another addition for each one of the blocks!
     //again. that is true for the reduction version only!
-    naiveSharedMem<<<bSize, 128>>> (d_a, d_b, d_res, size);
+    
+    naiveSharedMem<<<bSize, threads>>> (d_a, d_b, d_res, size);
 
     cudaEventRecord(stop,0);
     cudaEventSynchronize(stop);
@@ -318,15 +337,18 @@ void callNaiveSharedMem(int size, int threads){
 
     printf("Naive with Shared Memory took %fms\n", time);
 
+    cudaError_t err = cudaGetLastError();
+    if(err != cudaSuccess){
+        printf("Cuda Error before printArr: %s\n", cudaGetErrorString(err));
+    }
+
+    // printArr <<<1, threads>>> (d_res);
+
     cudaMemcpy(res, d_res, sizeof(float)*size, cudaMemcpyDeviceToHost);
 
-    // for(int i = 0; i< size; i++){
-    //     printf("res[%d] = %f\n", i, res[i]);
-    // }
-    
     float n = size - 1.0;
     float expectedRes = (pow(n, 2.0) + n) / 2;
-    float diff = res[0] - (float)size;
+    float diff = res[0] - expectedRes;
 
     if (diff > 1.0 || diff < -1.0){
         printf("The result is %f, but should be %f, difference is %f \n", res[0], expectedRes, diff);
