@@ -38,26 +38,18 @@ __global__ void naiveGlobalMem(float * a, float * b, float* res, int size){
     we need double the block-starting point to keep working on disjoint parts of the input */
     int id = threadIdx.x + 2*(blockIdx.x * blockDim.x);
     int stepSize = size/2;
-    
-    int iterations = 1;
-    int logSize = size;
-
-    while(logSize > 1){
-        logSize /= 2;
-        iterations++;
-    }
 
     // first iteration: 
     res[id] = (a[id] * b[id]) + (a[id + stepSize] * b[id + stepSize]);
-    stepSize /= 2; 
+
     __syncthreads();
 
-    for(int i = 1; i < iterations; i++){
-        if (id - 2 * (blockDim.x * blockIdx.x) < stepSize){
+    for(int i = stepSize / 2; i > 0; i /= 2){
+        if (id - 2 * (blockDim.x * blockIdx.x) < i){
             if(id == 112 || id == 108){
                 //printf("I am thread %d, with res[%d] = %f. I will add res[%d] = %f\n", id, id, res[id], id + stepSize, res[id + stepSize]);
             }
-            res[id] += res[id + stepSize];
+            res[id] += res[id + i];
             stepSize /= 2;
         }
         __syncthreads();
@@ -66,24 +58,11 @@ __global__ void naiveGlobalMem(float * a, float * b, float* res, int size){
 
 __global__ void globalMemSum(float * res, int size){
     int id = threadIdx.x + 2 * (blockDim.x * blockIdx.x);
-    int stepSize = size/2;
-    
-    int iterations = 1;
-    int logSize = size;
 
-    while(logSize > 1){
-        logSize /= 2;
-        iterations++;
-    }
-
-    if(id == 0){
-        // printf("globalMemSum has been invoked\n");
-    }
-    for(int i = 0; i < iterations; i++){
-        if ((id - 2 * (blockDim.x * blockIdx.x)) < stepSize){
+    for(int i = size / 2; i > 0; i /= 2){
+        if ((id - 2 * (blockDim.x * blockIdx.x)) < i){
             //printf("I am thread %d, with res[%d] = %f. I will add res[%d] = %f\n", id, id, res[id], id + stepSize, res[id + stepSize]);   
-            res[id] += res[id + stepSize];
-            stepSize /= 2;
+            res[id] += res[id + i];
         }
         __syncthreads();
     }
@@ -127,7 +106,7 @@ __global__ void naiveSharedMem(float * a, float * b, float* res, int size){
 
     // Writing the result bacck to global Memory
     if (bId == 0){
-        //printf("I am from block %d, I will write %f into cell %d\n", blockIdx.x, rab[bId], gId);
+      //  printf("I am from block %d, I will write %f into cell %d\n", blockIdx.x, rab[bId], gId);
         res[gId] = rab[bId];
     }
 }
@@ -136,7 +115,7 @@ __global__ void sharedMemSum (float * res, int size){
 
     extern __shared__ float r[];
     int bId = threadIdx.x;
-    int gId = threadIdx.x + (blockDim.x * blockIdx.x);
+    int gId = threadIdx.x + 2 * (blockDim.x * blockIdx.x);
 
     // if(bId== 0){
 
@@ -162,7 +141,7 @@ __global__ void sharedMemSum (float * res, int size){
 
     // writing the result back to global Memory
     if(bId == 0){
-        // printf("I am thread 0 from block %d and my result is %f\n", blockIdx.x, r[bId]);
+         //printf("I am thread 0 from block %d and my result is %f, my gid is %d\n", blockIdx.x, r[bId], gId);
         res[gId] = r[bId];
     }
     
@@ -215,6 +194,28 @@ void vecInit(float * a, float size){
     for(int i = 0; i < size; i++){
         float r = rand() % 64;
         a[i] = r;
+    }
+}
+
+void testSharedMemSum(int size, int threads){
+
+    int bSize = size / (2 * threads);
+    float * a = (float*) malloc (sizeof(float)*size);
+    float* d_a;
+
+    cudaMalloc(&d_a, sizeof(float)*size);
+
+    vecInitGauss (a, size);
+    cudaMemcpy(d_a, a, sizeof(float)*size , cudaMemcpyHostToDevice);
+
+    sharedMemSum <<<bSize, threads, sizeof(float) * threads>>> (d_a, size);
+
+    cudaMemcpy(a, d_a, sizeof(float)*size, cudaMemcpyDeviceToHost);
+
+    float n = size - 1;
+    float expectedRes = (pow(n, 2.0) + n) / 2;
+    if (a[0] != (float) expectedRes){
+        printf("The result is %f, but should be %f \n", a[0], (float) expectedRes);
     }
 }
 
@@ -311,7 +312,7 @@ void callNaiveGlobalMem(int size, int threads){
     // vecInit (a, size);
     // vecInit (b, size);
 
-    vecInitGauss(a, size);
+   vecInitGauss(a, size);
 
     //vecInitOnes(a, size);
     vecInitOnes(b, size);
@@ -383,8 +384,8 @@ void callNaiveGlobalMem(int size, int threads){
 
     cudaMemcpy(res, d_res, sizeof(float)*size, cudaMemcpyDeviceToHost);
     
-    if (res[0] != (float)size){
-        printf("The result is %f, but should be %f \n", res[0], (float) size);
+    if (res[0] != (float)expectedRes){
+        printf("The result is %f, but should be %f \n", res[0], (float) expectedRes);
     } else {
         printf("Result is correct\n");
     }
@@ -471,10 +472,9 @@ void callNaiveSharedMem(int size, int threads){
 
         cudaDeviceSynchronize();
         
-       // printArr<<<newBSize, threads>>> (d_res);
+       //printArr<<<newBSize, threads>>> (d_res);
+       //cudaDeviceSynchronize();
 
-
-        cudaDeviceSynchronize();
         err = cudaGetLastError();
         if(err != cudaSuccess){
             printf("Cuda Error after Align in while: %s\n", cudaGetErrorString(err));
@@ -491,7 +491,6 @@ void callNaiveSharedMem(int size, int threads){
             printf("Cuda Error after SharedMemSum in while: %s\n", cudaGetErrorString(err));
             printf("Launch config: bSize = %d, threads = %d, sharedMem = %d\n", bSize, threads, threads);
         }
-        // this should work exactly, as the part in the if clause, but doesn't. why?
         newBSize = bSize / (threads * 2);
         if (bSize > 1 && newBSize == 0){
             newBSize = 1;
@@ -506,10 +505,10 @@ void callNaiveSharedMem(int size, int threads){
 
     if (bSize > 1){
         align<<<newBSize, bSize>>> (d_res, d_a, 2 * threads);
-        // if(err != cudaSuccess){
-        //     printf("Cuda Error after align in if: %s\n", cudaGetErrorString(err));
-        //     printf("Launch config: newBSize = %d, threads = %d\n", newBSize, bSize);
-        // }
+         if(err != cudaSuccess){
+             printf("Cuda Error after align in if: %s\n", cudaGetErrorString(err));
+             printf("Launch config: newBSize = %d, threads = %d\n", newBSize, bSize);
+        }
 
         float * temp = d_res;
         d_res = d_a;
@@ -517,8 +516,8 @@ void callNaiveSharedMem(int size, int threads){
 
         cudaDeviceSynchronize();
 
-        printf("bsize= %d\n", bSize);
-        printArr <<<1, bSize>>> (d_res);
+        //printf("bsize= %d\n", bSize);
+        //printArr <<<1, bSize>>> (d_res);
 
         err = cudaGetLastError();
         // if(err != cudaSuccess){
@@ -627,23 +626,30 @@ void callNaiveWarpRed(int size, int threads){
 
 int main(){
 
-for (int i = 0; i < 10; i ++){
-    for (int j = i; j < 25; j++){
-        
+    for (int i = 0; i <= 10; i ++){
+        for (int j = i + 1; j < 27; j++){
+            
+            int size = 1 << j;
+            int threads = 1 << i;
+            printf("Threads = %d, size = %d\n", threads, size );
+            // callNaiveGlobalMem(size, threads);
+            // callNaiveSharedMem(size, threads);
+   
+        }
     }
-}
 
-    int j = 16;
+    int j = 17;
     int i = 7;
+
 
     int size = 1 << j;
     int threads = 1 << i;
-    printf("Threads = %d, size = %d\n", threads, size );
     
     // callCublas();
-    // callNaiveGlobalMem(size, threads);
-     callNaiveSharedMem(size, threads);
+    //callNaiveGlobalMem(size, threads);
+    callNaiveSharedMem(size, threads);
    // callNaiveWarpRed(size, threads); 
+   //testSharedMemSum(2048, 1024);
 
     return 0;
 }
