@@ -106,24 +106,13 @@ __global__ void naiveSharedMem(float * a, float * b, float* res, int size){
 __global__ void naiveWarpRed(float* a, float* b, float* res, int size){
 
     int id = threadIdx.x;
-    int stepSize = size/2;
-    
-    int iterations = 1;
-    int logSize = size;
 
-    while(logSize > 1){
-        logSize /= 2;
-        iterations++;
-    }
-
-    float mySum = a [id] * b [id];
-
-    for(int i = 0; i < iterations-1; i++){
-        int condition = id < stepSize;
+    float mySum = a[id] * b[id] + a[id + size / 2] * b[id + size / 2];
+    for(int i = size / 4; i > 0; i /= 2){
+        int condition = id < i * 2;
         unsigned mask = __ballot_sync(0xffffffff, condition);
         if(condition){
-            mySum += __shfl_up_sync(mask, mySum, stepSize);
-            stepSize /= 2;
+            mySum += __shfl_down_sync(mask, mySum, i);
         }
         // no sync here, because the shuffle syncs!
     }
@@ -226,8 +215,6 @@ void callNaiveGlobalMem(int size, int threads){
     cudaEventCreate(&stop);
     
     printf("Threads = %d, size = %d\n", threads, size );
-    // Every thread can add two numbers, thus we can add 256 number in one iteration
-    int bSize = size / (2 * threads);
 
     float n = size - 1.0;
     float expectedRes = (pow(n, 2.0) + n) / 2;          // This is the expected result for the gaussian sum
@@ -263,7 +250,14 @@ void callNaiveGlobalMem(int size, int threads){
     //LOOOOOOOOL this only applies to standard warp reduction, not using global or shared Memory!!
 
     // Every thread can add two numbers, thus we can add 2*threads many numbers in one iteration
-    naiveGlobalMem <<<bSize, threads>>> (d_a, d_b, d_res, threads * 2);
+    naiveGlobalMem <<<1, threads>>> (d_a, d_b, d_res, size);
+    cudaDeviceSynchronize();
+
+    cudaError_t err = cudaGetLastError();
+    if(err != cudaSuccess){
+        printf("Cuda Error after Kernel Call: %s\n", cudaGetErrorString(err));
+        printf("nBlocks = %d threads = %d\n", 1, threads);
+    }
     
     cudaEventRecord(stop,0);
     cudaEventSynchronize(stop);
@@ -297,7 +291,6 @@ void callNaiveSharedMem(int size, int threads){
     cudaEventCreate (&start);
     cudaEventCreate(&stop);
 
-    int bSize = size / (2 * threads);
     float * a = (float*) malloc (sizeof(float)*size);
     float * b = (float*) malloc (sizeof(float)*size);
     float * res = (float*) malloc (sizeof(float)*size);
@@ -326,7 +319,7 @@ void callNaiveSharedMem(int size, int threads){
     // basically do another addition for each one of the blocks!
     //again. that is true for the reduction version only!
     
-    naiveSharedMem<<<bSize, threads>>> (d_a, d_b, d_res, size);
+    naiveSharedMem<<<1, threads>>> (d_a, d_b, d_res, size);
 
     cudaEventRecord(stop,0);
     cudaEventSynchronize(stop);
@@ -337,9 +330,11 @@ void callNaiveSharedMem(int size, int threads){
 
     printf("Naive with Shared Memory took %fms\n", time);
 
+    cudaDeviceSynchronize();
     cudaError_t err = cudaGetLastError();
     if(err != cudaSuccess){
-        printf("Cuda Error before printArr: %s\n", cudaGetErrorString(err));
+        printf("Cuda Error after Kernel Call: %s\n", cudaGetErrorString(err));
+        printf("threads = %d\n",threads);
     }
 
     // printArr <<<1, threads>>> (d_res);
@@ -384,14 +379,17 @@ void callNaiveWarpRed(int size, int threads){
     // vecInit (a, size);
     // vecInit (b, size);
 
-    vecInitOnes(a, size);
+    vecInitGauss (a, size);
+    
+    //vecInitOnes(a, size);
     vecInitOnes(b, size);
 
     cudaMemcpy(d_a, a, sizeof(float)*size , cudaMemcpyHostToDevice);
     cudaMemcpy(d_b, b, sizeof(float)*size , cudaMemcpyHostToDevice);
 
     cudaEventRecord(start, 0);
-    naiveWarpRed<<<1,size>>> (d_a, d_b, d_res, size);
+    naiveWarpRed<<<1, threads>>> (d_a, d_b, d_res, size);
+    cudaDeviceSynchronize();
 
     cudaEventRecord(stop,0);
     cudaEventSynchronize(stop);
@@ -400,16 +398,18 @@ void callNaiveWarpRed(int size, int threads){
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 
-    printf("WarpReduction Version took %fms\n", time);
-
+    
     cudaMemcpy(res, d_res, sizeof(float)*size, cudaMemcpyDeviceToHost);
+    printf("WarpReduction Version took %fms\n", time);
 
     // for (int i = 0; i< size; i++){
     //     printf("res[%d] = %f\n", i, res[i]);
     // }
     
-    if (res[0] != (float)size){
-        printf("The result is %f, but should be %f \n", res[0], (float) size);
+    float expRes = (pow((size-1), 2.0) + (size-1)) / 2;
+
+    if (res[0] != (float)expRes){
+        printf("The result is %f, but should be %f \n", res[0], (float) expRes);
     }
 
     cudaFree(d_a);
@@ -425,13 +425,14 @@ int main(){
 
     int threads = 1 << 5;
     int size = 1 << 6;
-    //  for (int i = 0; i < 5; i++){
-    // }
+    for (int i = 0; i < 5; i++){
+        
+        callCublas(size);
+        callNaiveGlobalMem(size, threads);
+        callNaiveSharedMem(size, threads);
+        callNaiveWarpRed(size, threads); 
+    }
     
-    callCublas(size);
-    callNaiveGlobalMem(size, threads);
-    callNaiveSharedMem(size, threads);
-    callNaiveWarpRed(size, threads); 
 
     return 0;
 }
