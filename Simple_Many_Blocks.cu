@@ -4,6 +4,14 @@
 #include <math.h>
 #include <cublas_v2.h>
 
+#define cudaCheckErr() {                                                                           \
+    cudaError_t err = cudaGetLastError();                                                          \
+    if(err != cudaSuccess){                                                                        \
+    printf("Cuda Error in align: %s, %d %s\n", __FILE__, __LINE__, cudaGetErrorString(err));    \
+    exit(0);                                                                                   \
+    }                                                                                              \
+}
+
 // try to do vector ops of sum of a*b (where a and b are vectors) So basically the inner product
 
 // This is a function, that can be useful for debugging
@@ -15,7 +23,6 @@ __global__ void printArr(float * a){
 __global__ void align (float* a, float* res, int stride){
     int id = threadIdx.x + (blockIdx.x * blockDim.x);
     res[id] = a[id * stride];
-    //printf("I put a[%d] = %f into res[%d], the stride is %d\n", id* stride, a[id*stride], id, stride);
 }
 
 __global__ void naiveGlobalMem(float * a, float * b, float* res, int size){
@@ -345,11 +352,7 @@ void callNaiveGlobalMem(int size, int threads){
         cudaDeviceSynchronize();
         int new_nBlocks = nBlocks / (threads * 2);
         align <<<2 * new_nBlocks, threads>>> (d_res, d_a, 2 * threads);
-        cudaError_t err = cudaGetLastError();
-        if(err != cudaSuccess){
-            printf("Cuda Error in align: %s\n", cudaGetErrorString(err));
-            printf("Config Args: new_nBlocks = %d, threads = %d\n", new_nBlocks, threads);
-        }
+        cudaCheckErr();
         cudaDeviceSynchronize();
 
         // Align swaps around d_a and d_res, so we swap it back
@@ -366,11 +369,7 @@ void callNaiveGlobalMem(int size, int threads){
         cudaDeviceSynchronize();
         align <<<1, nBlocks>>> (d_res, d_a, 2 * threads);
         cudaDeviceSynchronize();
-        cudaError_t err = cudaGetLastError();
-        if(err != cudaSuccess){
-            printf("Cuda Error in align: %s\n", cudaGetErrorString(err));
-            printf("Config Args: new_nBlocks = %d, threads = %d\n", 1, nBlocks);
-        }
+        cudaCheckErr();
         // Align swaps around d_a and d_res, so we swap it back
         float * temp = d_res;
         d_res = d_a;
@@ -389,12 +388,16 @@ void callNaiveGlobalMem(int size, int threads){
     
     cudaMemcpy(res, d_res, sizeof(float)*size, cudaMemcpyDeviceToHost);
 
+    float time_s = time/(float)1e3;
+    float GB = (float) size * sizeof(float);
+    float GBs = GB / time_s / (float)1e9;
+
     float expectedRes = ((size - 1) * (size - 1) + size - 1) / 2;
     
     if (res[0] != (float)expectedRes){
         printf("The result is %f, but should be %f \n", res[0], (float) expectedRes);
     } else {
-        printf("Naive with Global Memory with %d threads and size %d took %fms\n", threads, size, time);
+        printf("Naive with Global Memory with  %d threads and size %d TIME: %fs GB/s: %f\n", threads, size, time_s, GBs);
     }
 
     cudaFree(d_a);
@@ -442,11 +445,7 @@ void callNaiveSharedMem(int size, int threads){
     // There are 2 * threads elements to be added and there are three arrays of that many elements
     naiveSharedMem<<<nBlocks, threads, sizeof(float) * threads * 2 * 3>>> (d_a, d_b, d_res, threads * 2);
 
-    cudaError_t err = cudaGetLastError();
-    if(err != cudaSuccess){
-        printf("Cuda Error after first iteration: %s\n", cudaGetErrorString(err));
-        printf("Launch config: nBlocks = %d, threads = %d, sharedMem = %d\n", nBlocks, threads, threads * 2 * 3);
-    }
+    cudaCheckErr();
     
     int new_nBlocks = nBlocks / (threads * 2);
     if (nBlocks > 1 && new_nBlocks == 0){
@@ -455,11 +454,7 @@ void callNaiveSharedMem(int size, int threads){
     
     cudaDeviceSynchronize();
     
-    err = cudaGetLastError();
-    if(err != cudaSuccess){
-        printf("Cuda Error after align: %s\n", cudaGetErrorString(err));
-        printf("Launch config: new_nBlocks = %d, threads = %d, sharedMem = %d\n", new_nBlocks, threads, threads * 2 * 3);
-    }
+    cudaCheckErr();
 
     while(nBlocks > 2 * threads){
        
@@ -470,22 +465,15 @@ void callNaiveSharedMem(int size, int threads){
         
         cudaDeviceSynchronize();
 
-        err = cudaGetLastError();
-        if(err != cudaSuccess){
-            printf("Cuda Error after Align in while: %s\n", cudaGetErrorString(err));
-            printf("Launch config: #blocks = %d, threads = %d\n", new_nBlocks * 2, threads);
-        }
+        cudaCheckErr();
         
         nBlocks = new_nBlocks;
         sharedMemSum<<<nBlocks, threads, sizeof(float) * threads>>> (d_res, threads * 2);
 
         cudaDeviceSynchronize();
 
-        err = cudaGetLastError();
-        if(err != cudaSuccess){
-            printf("Cuda Error after SharedMemSum in while: %s\n", cudaGetErrorString(err));
-            printf("Launch config: nBlocks = %d, threads = %d, sharedMem = %d\n", nBlocks, threads, threads);
-        }
+        cudaCheckErr();
+
         new_nBlocks = nBlocks / (threads * 2);
         if (nBlocks > 1 && new_nBlocks == 0){
             new_nBlocks = 1;
@@ -501,11 +489,8 @@ void callNaiveSharedMem(int size, int threads){
         
         cudaDeviceSynchronize();
         
-        err = cudaGetLastError();
-         if(err != cudaSuccess){
-             printf("Cuda Error after align in if: %s\n", cudaGetErrorString(err));
-             printf("Launch config: new_nBlocks = %d, threads = %d\n", new_nBlocks, nBlocks);
-         }
+       cudaCheckErr();
+
         sharedMemSum<<<1, (nBlocks / 2), sizeof(float) * (nBlocks / 2)>>> (d_res, nBlocks);
     }
 
@@ -572,11 +557,8 @@ void callNaiveWarpRed(int size, int threads){
     naiveWarpRed<<<nBlocks, threads, sizeof(float) * warps_per_block>>> (d_a, d_b, d_res, threads * 2);
     cudaDeviceSynchronize();
     
-    cudaError_t err = cudaGetLastError();
-    if(err != cudaSuccess){
-        printf("Cuda Error after first iteration: %s\n", cudaGetErrorString(err));
-        printf("Launch config: gridDim = %d, threads = %d, sharedMem = %d\n", 1, size / 2, warps_per_block);
-    }
+    cudaCheckErr();
+
     int new_nBlocks = nBlocks / (threads * 2);
 
     cudaDeviceSynchronize();
@@ -606,11 +588,7 @@ void callNaiveWarpRed(int size, int threads){
         d_a = temp;        
         cudaDeviceSynchronize();
 
-        err = cudaGetLastError();
-        if(err != cudaSuccess){
-            printf("Cuda Error after first iteration: %s\n", cudaGetErrorString(err));
-            printf("Launch config: gridDim = %d, threads = %d, sharedMem = %d\n", 1, nBlocks, warps_per_block);
-        }
+        cudaCheckErr();
     }
 
     cudaEventRecord(stop,0);
@@ -650,8 +628,8 @@ int main(){
                 int threads = 1 << i;
                 //printf("Threads = %d, size = %d\n", threads, size );
                 callNaiveGlobalMem(size, threads);
-                callNaiveSharedMem(size, threads);
-                callNaiveWarpRed(size, threads);
+                //callNaiveSharedMem(size, threads);
+                //callNaiveWarpRed(size, threads);
        
             }
         }
