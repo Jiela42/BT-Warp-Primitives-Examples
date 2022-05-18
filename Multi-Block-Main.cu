@@ -17,13 +17,13 @@
 
 // do vector ops of sum of a*b (where a and b are vectors) So basically the inner product
 
-void runTest(char* lab, int (*fptr)(float* a, float* b, float* res, int size, int threads), float* src_a, float* src_b, float* src_res, int size, int threads, float checkSum){
+void runTest(char* lab, int (*fptr)(float* a, float* b, float* res, int size, int threads), float* src_a, float* src_b, float* src_res, int size, int threads, int reps, float checkSum){
 
     float *d_a, *d_b, *d_res;
 
-    cudaMalloc(&d_a, sizeof(float)*size);
-    cudaMalloc(&d_b, sizeof(float)*size);
-    cudaMalloc(&d_res, sizeof(float)*size);
+    cudaMalloc(&d_a, sizeof(float) * size * reps);
+    cudaMalloc(&d_b, sizeof(float) * size * reps);
+    cudaMalloc(&d_res, sizeof(float) * size * reps);
 
     cudaEvent_t start, stop;
     float time_ms;
@@ -33,9 +33,12 @@ void runTest(char* lab, int (*fptr)(float* a, float* b, float* res, int size, in
 
     cudaCheckErr();
 
-    cudaMemcpy(d_a, src_a, sizeof(float)*size , cudaMemcpyHostToDevice);
-    cudaMemcpy(d_b, src_b, sizeof(float)*size , cudaMemcpyHostToDevice);
-
+    // creates the input reps times
+    for (int i = 0; i < reps; i ++){
+        int offset = size * i;
+        cudaMemcpy(d_a + offset, src_a, sizeof(float)*size , cudaMemcpyHostToDevice);
+        cudaMemcpy(d_b + offset, src_b, sizeof(float)*size , cudaMemcpyHostToDevice);
+    }
     // warm up
     // fptr(d_a, d_b, d_res, size, threads);
 
@@ -43,8 +46,11 @@ void runTest(char* lab, int (*fptr)(float* a, float* b, float* res, int size, in
     cudaCheckErr();
 
     cudaEventRecord(start);
-
-    int swap = fptr(d_a, d_b, d_res, size, threads);
+    int swap = 0;
+    for(int i = 0; i < reps; i ++){
+        int offset = size * i;
+        swap = fptr(d_a + offset, d_b + offset, d_res, size, threads);
+    }
 
     cudaEventRecord(stop);
     cudaDeviceSynchronize();
@@ -53,7 +59,7 @@ void runTest(char* lab, int (*fptr)(float* a, float* b, float* res, int size, in
     cudaEventElapsedTime(&time_ms, start, stop);
     float time_s = time_ms / (float) 1e3;
 
-    float GB = (float) size * sizeof(float);
+    float GB = (float) size * sizeof(float) * reps;
     float GBs = GB / time_s / (float)1e9;
 
     if(swap){
@@ -95,29 +101,33 @@ void vecInitGauss (float * a, int size){
 
 int main(){
 
-    for (int i = 0; i <= 10; i ++){         // Threads
-        for (int j = i + 1; j < 16; j++){   // Number of Elements
+    int reps = 50;
+
+    for (int i = 9; i < 10; i ++){         // Threads
+        for (int j = i + 1; j < 24; j++){   // Number of Elements
             
             int size = 1 << j;
             int threads = 1 << i;
 
             float checkSum = ((size - 1) * (size - 1) + (size - 1)) / 2;
+            checkSum = size;
+
 
             // Initialize a, b and the result in "normal" memory
             float * a = (float*) malloc (sizeof(float)*size);
             float * b = (float*) malloc (sizeof(float)*size);
             float * res = (float*) malloc (sizeof(float) * size);
 
-            vecInitGauss(a, size);
+            vecInitOnes(a, size);
             vecInitOnes(b, size);
 
             // callNaiveGlobalMem(size, threads);
-            runTest("multi_block_globalMem", multi_block_globalMem, a, b, res, size, threads, checkSum);
+            runTest("multi_block_globalMem", multi_block_globalMem, a, b, res, size, threads, reps, checkSum);
             // callNaiveSharedMem(size, threads);
-            runTest("multi_block_SharedMem", multi_block_sharedMem, a, b, res, size, threads, checkSum);
+            runTest("multi_block_SharedMem", multi_block_sharedMem, a, b, res, size, threads, reps, checkSum);
             
             // callNaiveWarpRed(size, threads);
-            runTest("multi_block_Warps", multi_block_warps, a, b, res, size, threads, checkSum);
+            runTest("multi_block_Warps", multi_block_warps, a, b, res, size, threads, reps, checkSum);
             
 
             free(a);
