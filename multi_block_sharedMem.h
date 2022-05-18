@@ -89,7 +89,7 @@ int multi_block_sharedMem(float* a, float* b, float* res, int size, int threads)
     
     cudaCheckErr();
 
-    while(nBlocks > 2 * threads){
+    while(nBlocks > threads){
        
         align<<<new_nBlocks * 2, threads>>> (res, a, 2 * threads);
         float * temp = res;

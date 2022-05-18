@@ -101,10 +101,10 @@ void vecInitGauss (float * a, int size){
 
 int main(){
 
-    int reps = 50;
+    int reps = 30;
 
-    for (int i = 9; i < 10; i ++){         // Threads
-        for (int j = i + 1; j < 24; j++){   // Number of Elements
+    for (int i = 5; i <= 10; i ++){         // Threads
+        for (int j = 20; j < 25; j++){   // Number of Elements
             
             int size = 1 << j;
             int threads = 1 << i;

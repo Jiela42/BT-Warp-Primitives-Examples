@@ -64,7 +64,7 @@ int multi_block_globalMem(float* a, float* b, float* res, int size, int threads)
     globalMemProdSumKernel <<<nBlocks, threads>>> (a, b, res, threads * 2); 
 
     // nBlocks is the number of elements that still need summing up
-    while (nBlocks > 2 * threads){
+    while (nBlocks > threads){
         cudaDeviceSynchronize();
         int new_nBlocks = nBlocks / (threads * 2);
         align <<<2 * new_nBlocks, threads>>> (res, a, 2 * threads);
@@ -84,6 +84,7 @@ int multi_block_globalMem(float* a, float* b, float* res, int size, int threads)
         cudaDeviceSynchronize();
         align <<<1, nBlocks>>> (res, a, 2 * threads);
         cudaDeviceSynchronize();
+
         cudaCheckErr();
         // Align swaps around a and res, so we swap it back
         float * temp = res;
