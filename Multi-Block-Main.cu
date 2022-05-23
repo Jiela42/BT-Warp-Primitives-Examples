@@ -59,7 +59,7 @@ void runTest(char* lab, int (*fptr)(float* a, float* b, float* res, int size, in
     cudaEventElapsedTime(&time_ms, start, stop);
     float time_s = time_ms / (float) 1e3;
 
-    float GB = (float) size * sizeof(float) * reps;
+    float GB = (float) size * sizeof(float) * reps * 2;
     float GBs = GB / time_s / (float)1e9;
 
     if(swap){
@@ -101,10 +101,10 @@ void vecInitGauss (float * a, int size){
 
 int main(){
 
-    int reps = 30;
+    int reps = 1;
 
-    for (int i = 5; i <= 10; i ++){         // Threads
-        for (int j = 20; j < 25; j++){   // Number of Elements
+    for (int i = 9; i < 10; i ++){         // Threads
+        for (int j = 24; j < 25; j++){   // Number of Elements
             
             int size = 1 << j;
             int threads = 1 << i;
@@ -122,9 +122,9 @@ int main(){
             vecInitOnes(b, size);
 
             // callNaiveGlobalMem(size, threads);
-            runTest("multi_block_globalMem", multi_block_globalMem, a, b, res, size, threads, reps, checkSum);
+            // runTest("multi_block_globalMem", multi_block_globalMem, a, b, res, size, threads, reps, checkSum);
             // callNaiveSharedMem(size, threads);
-            runTest("multi_block_SharedMem", multi_block_sharedMem, a, b, res, size, threads, reps, checkSum);
+            // runTest("multi_block_SharedMem", multi_block_sharedMem, a, b, res, size, threads, reps, checkSum);
             
             // callNaiveWarpRed(size, threads);
             runTest("multi_block_Warps", multi_block_warps, a, b, res, size, threads, reps, checkSum);

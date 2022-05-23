@@ -13,7 +13,7 @@ __global__ void naiveWarpRed(float* a, float* b, float* res, int size){
     extern __shared__ float r[];
 
     int id = threadIdx.x + 2 * (blockDim.x * blockIdx.x);
-    int blockId = threadIdx.x;
+    int threadId = threadIdx.x;
     int laneId = threadIdx.x % 32;
     int warpId = threadIdx.x / 32;
     int nWarps = blockDim.x / 32;
@@ -38,8 +38,23 @@ __global__ void naiveWarpRed(float* a, float* b, float* res, int size){
     if (laneId == 0){
        r[warpId] = mySum;
     }
-
     __syncthreads();
+
+    if (warpId == 0){
+
+        mySum = (threadId < nWarps) ? r[threadId] : 0.0;
+    }
+
+    for(int i = nWarps / 2; i > 0; i /= 2){
+        int condition = threadId < (2 * i) && warpId == 0;
+        unsigned mask = __ballot_sync(0xffffffff, condition);
+        if (condition){
+
+            mySum += __shfl_down_sync(mask, mySum, i);
+        }
+    }
+
+    /*__syncthreads();
     // Reducing results from first reduction
     if (nWarps > 1){
         for (int i = nWarps / 2; i > 0; i /= 2){
@@ -49,10 +64,10 @@ __global__ void naiveWarpRed(float* a, float* b, float* res, int size){
             __syncthreads();
         }
     }
-
+*/
     // Writing back to global Memory
     if(threadIdx.x == 0){
-        res[blockIdx.x] = r[0];
+        res[blockIdx.x] = mySum;
     }
 }
 
@@ -61,11 +76,13 @@ __global__ void warpRedSum(float* a, float* res, int size){
     extern __shared__ float r[];
 
     int id = threadIdx.x + 2 * (blockDim.x * blockIdx.x);
-    int blockId = threadIdx.x;
+    int threadId = threadIdx.x;
     int laneId = threadIdx.x % 32;
     int warpId = threadIdx.x / 32;
     int nWarps = blockDim.x / 32;
     int stepSize = size / 2;
+
+    nWarps = (nWarps == 0) ? 1 : nWarps;
 
     // First Iteration
     float mySum = a[id] + a[id + stepSize];
@@ -82,14 +99,28 @@ __global__ void warpRedSum(float* a, float* res, int size){
         }
     }
 
-    // loading warp results into shared Memory
+       // loading warp results into shared Memory
     if (laneId == 0){
-        r[warpId] = mySum;
+       r[warpId] = mySum;
+    }
+    __syncthreads();
+
+    if(warpId == 0){
+        mySum = (threadId < nWarps) ? r[threadId] : 0.0;
+
     }
 
-    __syncthreads();
+    for(int i = nWarps / 2; i > 0; i /= 2){
+        int condition = threadId < (2 * i) && warpId == 0;
+        unsigned mask = __ballot_sync(0xffffffff, condition);
+
+        if (condition){
+            mySum += __shfl_down_sync(mask, mySum, i);    
+        }
+    }
+
     // Reducing results from first reduction
-    if (nWarps > 1){
+  /*  if (nWarps > 1){
         for (int i = nWarps / 2; i > 0; i /= 2){
             if(blockId < i){
                r[blockId] += r[blockId + i];
@@ -97,10 +128,10 @@ __global__ void warpRedSum(float* a, float* res, int size){
             __syncthreads();
         }
     }
-
+*/
     // Writing back to global Memory
     if(threadIdx.x == 0){
-      res[blockIdx.x] = r[0];
+      res[blockIdx.x] = mySum;
     }
 }
 
@@ -110,17 +141,19 @@ int multi_block_warps(float* a, float* b, float* res, int size, int threads){
     int nBlocks = size / (2 * threads);
     int warps_per_block = threads / 32 + 1;     // the +1 is to ensure we assign memory even if int division rounds down
 
+
     naiveWarpRed<<<nBlocks, threads, sizeof(float) * warps_per_block>>> (a, b, res, threads * 2);
     cudaDeviceSynchronize();
-    
+
     cudaCheckErr();
 
     int new_nBlocks = nBlocks / (threads * 2);
 
+
     cudaDeviceSynchronize();
 
     while (nBlocks > threads * 2){
-
+        
         nBlocks = new_nBlocks;
         warpRedSum<<<nBlocks, threads, sizeof(float) * warps_per_block>>>(res, a, threads * 2);
         cudaDeviceSynchronize();
@@ -128,7 +161,6 @@ int multi_block_warps(float* a, float* b, float* res, int size, int threads){
         float * temp = res;
         res = a;
         a = temp;
-
         new_nBlocks = nBlocks / (threads * 2);
     }
 
@@ -139,12 +171,12 @@ int multi_block_warps(float* a, float* b, float* res, int size, int threads){
 
         warpRedSum<<<1, nBlocks, sizeof(float) * warps_per_block>>> (res, a, nBlocks * 2);
         
-        float * temp = res;
-        res = a;
-        a = temp;        
         cudaDeviceSynchronize();
 
         cudaCheckErr();
+        float * temp = res;
+        res = a;
+        a = temp;        
     }
 
     int swap = 0;
