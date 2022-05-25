@@ -104,7 +104,7 @@ int main(){
     int reps = 1;
 
     for (int i = 9; i < 10; i ++){         // Threads
-        for (int j = 24; j < 25; j++){   // Number of Elements
+        for (int j = 24; j < 28; j++){   // Number of Elements
             
             int size = 1 << j;
             int threads = 1 << i;

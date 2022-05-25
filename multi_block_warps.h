@@ -41,7 +41,6 @@ __global__ void naiveWarpRed(float* a, float* b, float* res, int size){
     __syncthreads();
 
     if (warpId == 0){
-
         mySum = (threadId < nWarps) ? r[threadId] : 0.0;
     }
 
