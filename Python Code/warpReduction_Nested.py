@@ -3,13 +3,20 @@ import numpy as np
 import dace
 
  # Da goal: sum ai * bi
+"""
+To do list, cause I will forget:
+- Properly init bSizes!
+
+"""
+
 
 # we start with the size = 32 = warpSize
-size = 1 << 5
+size = 1 << 5 + 2
 
 a = np.ones((size), dtype=float)
 b = np.ones((size), dtype=float)
 res = np.zeros((size), dtype=float)
+bSizes = np.array([32,2])
 
 res_vec = np.multiply(a,b)
 checkSum = np.sum(res_vec);
@@ -18,15 +25,16 @@ checkSum = np.sum(res_vec);
 
 # Size = dace.symbol('Size')
 
-sdfg = dace.SDFG('reduction')
+sdfg = dace.SDFG('full_Reduction')
 
 # sdfg.add_symbol('Size', stype=dace.int32)
 sdfg.add_scalar('dSize', dtype=dace.int32)
+sdfg.add_scalar('numBlocks', dtype=dace.int64)
+sdfg.add_array('blockSizes', dtype=dace.int32)
 sdfg.add_array('A', shape=[size], dtype=dace.float64)
 sdfg.add_array('B', shape=[size], dtype=dace.float64)
 
 sdfg.add_array('Res', shape=[size], dtype=dace.float64)
-
 
 
 def hoistedState(state, A, B, r):
@@ -50,7 +58,6 @@ def hoistedState(state, A, B, r):
     state.add_memlet_path(tasklet, mx, dst_node, src_conn='out', memlet=dace.Memlet(data=r, subset='i'))
 
 def partitionState(state, A, res_low, res_high):
-
     src_A = state.add_read(A)
 
     dst_node_low = state.add_write(res_low)
@@ -68,56 +75,23 @@ def partitionState(state, A, res_low, res_high):
     state.add_memlet_path(tasklet_low, mx_low, dst_node_low, src_conn='out_low', memlet=dace.Memlet(data = res_low, subset='i'))
     state.add_memlet_path(tasklet_high, mx_high, dst_node_high, src_conn='out_high', memlet=dace.Memlet(data=res_high, subset='j'))
 
-def changeSize(state):
-    sr = state.add_read('dSize')
-    sw = state.add_write('dSize')
-   # lastSize = 'dSize'.clone()
+multiply_state = sdfg.add_state
+hoistedState(multiply_state, 'A', 'B', 'Res')
 
-    tasklet= state.add_tasklet('half', {'a'}, {'b'}, 'b = a/2')    
+partition_State = sdfg.add_state
+partitionState(partition_State, 'Res', 'A', 'B')
 
-    state.add_edge(sr, None, tasklet, 'a', memlet=dace.Memlet(data='dSize', subset = '0'))
-    state.add_edge(tasklet, None, sw, 'b', memlet=dace.Memlet(data='dSize', subset= '0'))
+block_sdfg = dace.SDFG('blockwise_Reduction')
+bw_reduction_state = block_sdfg.add_state
 
-def reductionStep(state, A, B, r):
-    src_A = state.add_read(A)
-    src_B = state.add_read(B)
-
-    dst_node = state.add_write(r)
-
-    me, mx = state.add_map('reduceMap', dict(i = '0:dSize'))
-    tasklet = state.add_tasklet('reduce', {'in1', 'in2'},{'out'}, 'out = in1 + in2')
-
-    state.add_memlet_path(src_A, me, tasklet, dst_conn='in1', memlet=dace.Memlet(data=A, subset='i'))
-    state.add_memlet_path(src_B, me, tasklet, dst_conn='in2', memlet=dace.Memlet(data=B, subset = 'i'))
-    state.add_memlet_path(tasklet, mx, dst_node, src_conn='out', memlet=dace.Memlet(data=r, subset='i'))
+main_state = sdfg.add_state
 
 
+bme, bmx = bw_reduction_state.add_map('blockwise_map', dict(bId= '0:numBlocks'))
 
-state0 = sdfg.add_state()
-hoistedState(state0, 'A', 'B', 'Res')
-
-# instead I might wanna use a fancy interstate edge that does some partitioning <3
-state_Split = sdfg.add_state()
-partitionState(state_Split, 'Res', 'A', 'B')
-
-state_Half_Size = sdfg.add_state()
-changeSize(state_Half_Size)
-
-state_reductionStep = sdfg.add_state()
-reductionStep(state_reductionStep, 'A', 'B', 'Res')
-
-# end_state = sdfg.add_state()
-# write_back(end_state, 'Res')
+eme, emx = bw_reduction_state.add_map('elementwise_map', dict(i='0:blockSizes[bId]'))
 
 
-sdfg.add_edge(state0, state_Split, dace.InterstateEdge())
-sdfg.add_edge(state_Split, state_Half_Size, dace.InterstateEdge())
-sdfg.add_edge(state_Half_Size, state_reductionStep, dace.InterstateEdge('dSize' > 1))
-# sdfg.add_edge(state_Half_Size, end_state, dace.InterstateEdge('dSize' == 1))
-
-#def reductionState(state, A, B, r):
-
-# print(res[0])
 
 sdfg(A=a, B=b, Res=res, dSize=size)
 #sdfg.validate()
