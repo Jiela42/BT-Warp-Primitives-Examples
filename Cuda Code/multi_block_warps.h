@@ -8,7 +8,7 @@
     }                                                                                              \
 }
 
-__global__ void naiveWarpRed(float* a, float* b, float* res, int size){
+__global__ void naiveWarpRed(float* a, float* b, float* res, int size, int overshoot){
 
     extern __shared__ float r[];
 
@@ -21,6 +21,10 @@ __global__ void naiveWarpRed(float* a, float* b, float* res, int size){
 
     // Loading and first iteration:
     float mySum = a[id] * b[id] + a[id + stepSize] * b[id + stepSize];
+
+    if(id < overshoot){
+        mySum += a[size + id] * b[size + id];
+    }
 
     // First warp Reduction
     for(int i = min (size / 4, 16); i > 0; i /= 2){
@@ -41,7 +45,6 @@ __global__ void naiveWarpRed(float* a, float* b, float* res, int size){
     __syncthreads();
 
     if (warpId == 0){
-
         mySum = (threadId < nWarps) ? r[threadId] : 0.0;
     }
 
@@ -137,12 +140,23 @@ __global__ void warpRedSum(float* a, float* res, int size){
 
 int multi_block_warps(float* a, float* b, float* res, int size, int threads){
 
+    int floorPow = 1;
+
+    while(floorPow < size){
+        floorPow = floorPow << 1;
+    }
+    if (floorPow > size){
+        floorPow = floorPow >> 1;
+    }
+
+    int overshoot = size - floorPow;
+
+    size = floorPow;
     float * res_cpy = res;
     int nBlocks = size / (2 * threads);
     int warps_per_block = threads / 32 + 1;     // the +1 is to ensure we assign memory even if int division rounds down
 
-
-    naiveWarpRed<<<nBlocks, threads, sizeof(float) * warps_per_block>>> (a, b, res, threads * 2);
+    naiveWarpRed<<<nBlocks, threads, sizeof(float) * warps_per_block>>> (a, b, res, threads * 2, overshoot);
     cudaDeviceSynchronize();
 
     cudaCheckErr();
