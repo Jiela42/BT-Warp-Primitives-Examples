@@ -39,9 +39,6 @@ __global__ void naiveGlobalMem(float * a, float * b, float* res, int size){
 
     for(int i = 1; i < iterations; i++){
         if (id - 2 * (blockDim.x * blockIdx.x) < stepSize){
-            if(id == 112 || id == 108){
-                //printf("I am thread %d, with res[%d] = %f. I will add res[%d] = %f\n", id, id, res[id], id + stepSize, res[id + stepSize]);
-            }
             res[id] += res[id + stepSize];
             stepSize /= 2;
         }
