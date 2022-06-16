@@ -1,20 +1,19 @@
-
 from math import floor
 import numpy as np
 import dace
 from dace.transformation.interstate import GPUTransformSDFG
 from dace.transformation.interstate import StateFusion
 
- # Da goal: sum ai * bi
- # Specifically: put some of this into the gpu (just SOMETHING!!)
+# Da goal: sum ai * bi
+# Specifically: put some of this into the gpu (just SOMETHING!!)
 
 size = (1 << 5) + 3
 a = np.ones((size), dtype=float)
 b = np.ones((size), dtype=float)
 res = np.zeros((size), dtype=float)
 
-res_vec = np.multiply(a,b)
-checkSum = np.sum(res_vec);
+res_vec = np.multiply(a, b)
+checkSum = np.sum(res_vec)
 
 print(checkSum)
 
@@ -36,7 +35,7 @@ sdfg.add_transient('gRes', [size], dace.float64, dace.StorageType.GPU_Global)
 
 floorPow = 1
 
-while(floorPow < size):
+while (floorPow < size):
     floorPow = floorPow << 1
 
 if floorPow > size:
@@ -137,67 +136,64 @@ sdfg.apply_transformations(GPUTransformSDFG, dict(sequential_innermaps=False))
 
 
 def KernelCall(state):
-    tasklet = state.add_tasklet(
-        name= 'callingKernel',
-        inputs={'in1', 'in2'},
-        outputs={'out'},
-        code='''
-        // Set the current stream to match DaCe (for correct synchronization)
-        cublasSetStream(handle, __dace_current_stream);
+    code = f"""
+// Set the current stream to match DaCe (for correct synchronization)
+// cublasSetStream(handle, __dace_current_stream);
 
 
-        __global__ void naiveGlobalMem(float * a, float * b, float* res, int size){
-   
-            /* since every thread adds up two numbers (in the first iteration)
-            we need double the block-starting point to keep working on disjoint parts of the input */
-            int id = threadIdx.x + 2*(blockIdx.x * blockDim.x);
-            int stepSize = size/2;
-            
-            int iterations = 1;
-            int logSize = size;
+__global__ void naiveGlobalMem(float * a, float * b, float* res, int size){{
 
-            while(logSize > 1){
-                logSize /= 2;
-                iterations++;
-            }
+/* since every thread adds up two numbers (in the first iteration)
+we need double the block-starting point to keep working on disjoint parts of the input */
+int id = threadIdx.x + 2*(blockIdx.x * blockDim.x);
+int stepSize = size/2;
 
-            // first iteration: 
-            res[id] = (a[id] * b[id]) + (a[id + stepSize] * b[id + stepSize]);
-            stepSize /= 2; 
+int iterations = 1;
+int logSize = size;
 
-            for(int i = 1; i < iterations; i++){
-                if (id - 2 * (blockDim.x * blockIdx.x) < stepSize){
-                    res[id] += res[id + stepSize];
-                    stepSize /= 2;
-                }
-                __syncthreads();
-            }
-        }
+while(logSize > 1){{
+    logSize /= 2;
+    iterations++;
+}}
 
-         naiveGlobalMem <<<1, size>>> (gA, gB, gRes, size);
+// first iteration: 
+res[id] = (a[id] * b[id]) + (a[id + stepSize] * b[id + stepSize]);
+stepSize /= 2; 
 
-        '''
-    )
+for(int i = 1; i < iterations; i++){{
+    if (id - 2 * (blockDim.x * blockIdx.x) < stepSize){{
+        res[id] += res[id + stepSize];
+        stepSize /= 2;
+    }}
+    __syncthreads();
+}}
+}}
+
+naiveGlobalMem <<<1, size>>> (gA, gB, gRes, size);"""
+    tasklet = state.add_tasklet(name='callingKernel',
+                                inputs={'in1', 'in2'},
+                                outputs={'out'},
+                                code=code, language=dace.dtypes.Language.CPP)
     A = state.add_read('A')
     B = state.add_read('B')
     Res = state.add_write('Res')
     gA = state.add_access('gA')
     gB = state.add_access('gB')
-    gRes= state.add_access('gRes')
+    gRes = state.add_access('gRes')
 
-    state.add_edge(gA, None, tasklet,'in1', dace.Memlet('gA[0:Size]'))
+    state.add_edge(gA, None, tasklet, 'in1', dace.Memlet('gA[0:Size]'))
     state.add_edge(gB, None, tasklet, 'in2', dace.Memlet('gB[0:Size]'))
-    state.add_edge(tasklet,'out', gRes, None, dace.Memlet('gRes[0:Size]'))
+    state.add_edge(tasklet, 'out', gRes, None, dace.Memlet('gRes[0:Size]'))
 
-    state.add_nedge(A, gA, dace.Memlet(data='gA', subset ='0:Size'))
+    state.add_nedge(A, gA, dace.Memlet(data='gA', subset='0:Size'))
     state.add_nedge(B, gB, dace.Memlet(data='gB', subset=' 0:Size'))
-    state.add_nedge(gRes, Res, dace.Memlet(data='Res', subset= '0:Size'))
+    state.add_nedge(gRes, Res, dace.Memlet(data='Res', subset='0:Size'))
 
-callState= sdfg.add_state()
+
+callState = sdfg.add_state()
 KernelCall(callState)
 
 sdfg(A=a, B=b, Res=res, Size=size, Overshoot=overshoot)
-
 
 #sdfg.validate()
 print(res)
