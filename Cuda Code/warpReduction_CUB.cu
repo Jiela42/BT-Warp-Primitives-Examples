@@ -3,9 +3,6 @@
 
 using namespace std;
 
-
-
-
 __global__ void elmt_wise_mult(float * a, float * b, float * res){
     int id = threadIdx.x + (blockIdx.x * blockDim.x);
     res[id] = a[id] * b[id];
@@ -20,7 +17,10 @@ void init_Ones(float* a, int size){
 
 int main(){
 
-    int size = 1 << 6;
+    int size = 1 << 11;
+    int threads = 1 << 10;
+    int nBlocks = size/threads;
+
 
     float * a = (float*) malloc (sizeof(float)*size);
     float * b = (float*) malloc (sizeof(float)*size);
@@ -38,8 +38,9 @@ int main(){
 
     cudaMemcpy(d_a, a, sizeof(float)*size , cudaMemcpyHostToDevice);
     cudaMemcpy(d_b, b, sizeof(float)*size , cudaMemcpyHostToDevice);
-
-    elmt_wise_mult<<<1,size>>>(d_a, d_b, d_temp);
+    
+    void *args[] = {&d_a, &d_b, &d_temp};
+    cudaLaunchKernel((void*) elmt_wise_mult, dim3(nBlocks), dim3(threads),args, 0, NULL);
 
     cudaDeviceSynchronize();
 

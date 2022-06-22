@@ -247,7 +247,8 @@ void callNaiveGlobalMem(int size, int threads){
     //LOOOOOOOOL this only applies to standard warp reduction, not using global or shared Memory!!
 
     // Every thread can add two numbers, thus we can add 2*threads many numbers in one iteration
-    naiveGlobalMem <<<1, threads>>> (d_a, d_b, d_res, size);
+    void* args[] = {&d_a, &d_b, &d_res, &size};
+    cudaLaunchKernel((void*)naiveGlobalMem, dim3 (1), dim3(threads), args, 0, NULL);
     cudaDeviceSynchronize();
 
     cudaError_t err = cudaGetLastError();
