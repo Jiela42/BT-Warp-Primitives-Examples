@@ -131,6 +131,6 @@ sdfg.simplify
 sdfg(A=a, B=b, Res=res, Size=size, Overshoot=overshoot)
 print(a)
 print(b)
-print(res)
+#print(res)
 #sdfg.validate()
 print("Ended")
