@@ -1,3 +1,4 @@
+from atexit import register
 import cupy
 from dace.dtypes import StorageType
 import numpy as np
@@ -43,10 +44,15 @@ B = np.ones((sz))
 gaussInit(B)
 gB = cupy.asarray(B)
 
+r = cupy.array([float(0)])
 """
 res = sdfg(A=gA, B=gB, N=sz)
 print(res)
 """
+
+MaxTs = dace.symbol('MaxTs')
+GridDim = dace.symbol('GridDim')
+BlockDim = dace.symbol('BlockDim')
 
 
 sdfg2 = dace.SDFG('reduction')
@@ -62,23 +68,37 @@ def InitOut(state, i_out):
     dst_node = state.add_write(i_out)
     
     tasklet = state.add_tasklet('init_out', {}, {'out'}, 'out = double(0)')
-    state.add_edge(tasklet, None, dst_node, src_conn= 'out', memlet= dace.Memlet(data= i_out, subset = '0'))
+    state.add_edge(tasklet, None, dst_node, 'out', memlet= dace.Memlet(data= i_out, subset = '0'))
 
-def GridStrideLoop(state, i1, i2, m_out):
+def GridStrideLoop(state, i1, i2, mS):
     
     src_A = state.add_read(i1)
     src_B = state.add_read(i2)
     
-    dst_node = state.add_write(m_out)
+    dst_node = state.add_write(mS)
     
-    me,mx = state.add_map('gridSized_strides_map', dict(tId = '0:max(1,MaxTs/N)'))
+    me,mx = state.add_map('gridSized_strides_map', dict(tId = 'i*BlockDim+j:N:tId*MaxTs'))
     tasklet = state.add_tasklet('mult', {'in1', 'in2'}, {'out'},  'out += in1 * in2')
     
-    state.add_memlet_path(src_A, me, tasklet, dst_conn='in1', memlet=dace.Memlet(data=i1, subset='i * BlockDim + j + tId * MaxTs'))
-    state.add_memlet_path(src_B, me, tasklet, dst_conn='in2', memlet=dace.Memlet(data=i2, subset = 'i * BlockDim + j + tId * MaxTs'))
-    state.add_memlet_path(tasklet, mx, dst_node, src_conn='out', memlet=dace.Memlet(data=m_out, subset='tId'))
+    state.add_memlet_path(src_A, me, tasklet, dst_conn='in1', memlet=dace.Memlet(data=i1, subset='tId'))
+    state.add_memlet_path(src_B, me, tasklet, dst_conn='in2', memlet=dace.Memlet(data=i2, subset = 'tId'))
+    state.add_memlet_path(tasklet, mx, dst_node, src_conn='out', memlet=dace.Memlet(data=mS, subset='0'))
     
-
+def WarpWiseReduction(state):
+    tasklet_code = '''
+    acc += shufl_down_sync(0xFFFFFFFF, acc, offset);
+    '''
+    
+    tasklet, me, mx = state.add_mapped_tasklet(
+        name = 'warp-wise-Reduction',
+        map_ranges={'offset':'16: offset/2: 0'},
+        inputs= {'acc': dace.Memlet('mySum')},
+        outputs= {'acc': dace.Memlet('mySum')},
+        code=tasklet_code,
+        language=dace.dtypes.Language.CPP,
+        external_edges= True
+    )
+    
 
 ##################################
 # Create the GPU scheduleing state
@@ -96,22 +116,22 @@ me.map.schedule = dace.dtypes.ScheduleType.GPU_Device
 
 gpu_sdfg = dace.SDFG('GPU_SDFG')
 
-gpu_sdfg.add_array('multiplied', shape=[min(sz, 256*2048)], dtype=dace.float64, storage=dace.StorageType.GPU_Global, transient=True)
+# gpu_sdfg.add_array('multiplied', shape=[min(sz, 256*2048)], dtype=dace.float64, storage=dace.StorageType.GPU_Global, transient=True)
 gpu_sdfg.add_array('sA', shape= [N], dtype=dace.float64, storage=dace.StorageType.GPU_Global)
 gpu_sdfg.add_array('sB', shape= [N], dtype= dace.float64, storage=dace.StorageType.GPU_Global)
 gpu_sdfg.add_array('sRes', shape=[1], dtype=dace.float64, storage=StorageType.GPU_Global)
+gpu_sdfg.add_scalar('mySum', dtype=dace.float64, storage=StorageType.Register, transient=True)
 
 # create inner sdfg
 
-i_state = gpu_sdfg.add_state('Init_out')
-InitOut(i_state, 'sRes')
-
 m_state= gpu_sdfg.add_state('Mult')
-GridStrideLoop(m_state, 'sA', 'sB', 'multiplied')
+GridStrideLoop(m_state, 'sA', 'sB', 'mySum')
+
+wwr_state= gpu_sdfg.add_state('Warp-Wise-Reduction')
+WarpWiseReduction(wwr_state)
 
 
-
-gpu_sdfg.add_edge(i_state, m_state, dace.InterstateEdge())
+gpu_sdfg.add_edge(m_state, wwr_state, dace.InterstateEdge())
 
 ##################################
 
@@ -135,7 +155,9 @@ for n in gpuCallState.nodes():
     if isinstance(n, nodes.MapEntry) and "j" in n.map.params:
         n.map.schedule = dace.dtypes.ScheduleType.GPU_ThreadBlock
         
-res2 = sdfg2(A=gA, B=gB, N=sz, MaxTs = blockDim * gridDim, BlockDim = blockDim, GridDim = gridDim)
+
+
+res2 = sdfg2(A=gA, B=gB, __return=r, N=sz, MaxTs = blockDim * gridDim, BlockDim = blockDim, GridDim = gridDim)
 print(res2)
 
 #assert(np.allclose(res, res2))
