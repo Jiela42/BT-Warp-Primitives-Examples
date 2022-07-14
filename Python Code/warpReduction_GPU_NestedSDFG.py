@@ -86,14 +86,18 @@ def GridStrideLoop(state, i1, i2, mS):
     
 def WarpWiseReduction(state):
     tasklet_code = '''
-    acc += shufl_down_sync(0xFFFFFFFF, acc, offset);
+    int offset = 1 << k;
+    accOut += __shfl_down_sync(0xFFFFFFFF, accOut, offset);
     '''
     
+    # for loop
+    # hardcode entire loop
+    
     tasklet, me, mx = state.add_mapped_tasklet(
-        name = 'warp-wise-Reduction',
-        map_ranges={'offset':'16: offset/2: 0'},
-        inputs= {'acc': dace.Memlet('mySum')},
-        outputs= {'acc': dace.Memlet('mySum')},
+        name = 'warpwise_Reduction',
+        map_ranges={'k':'5:0'},
+        inputs= {'accIn': dace.Memlet.from_array('mySum',state.parent.arrays['mySum'])},
+        outputs= {'accOut': dace.Memlet.from_array('mySum', state.parent.arrays['mySum'])},
         code=tasklet_code,
         language=dace.dtypes.Language.CPP,
         external_edges= True
@@ -122,12 +126,13 @@ gpu_sdfg.add_array('sB', shape= [N], dtype= dace.float64, storage=dace.StorageTy
 gpu_sdfg.add_array('sRes', shape=[1], dtype=dace.float64, storage=StorageType.GPU_Global)
 gpu_sdfg.add_scalar('mySum', dtype=dace.float64, storage=StorageType.Register, transient=True)
 
+# gpu_sdfg.add_scalar('acc', dtype=dace.float64, storage=StorageType.Register, transient=True)
 # create inner sdfg
 
 m_state= gpu_sdfg.add_state('Mult')
 GridStrideLoop(m_state, 'sA', 'sB', 'mySum')
 
-wwr_state= gpu_sdfg.add_state('Warp-Wise-Reduction')
+wwr_state= gpu_sdfg.add_state('WarpWise_Reduction')
 WarpWiseReduction(wwr_state)
 
 
