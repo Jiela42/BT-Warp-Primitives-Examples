@@ -1,4 +1,5 @@
 from atexit import register
+from random import random
 import cupy
 from dace.dtypes import StorageType
 import numpy as np
@@ -15,7 +16,7 @@ def gaussInit(a):
         a[i] = i % 131          # The modulo ensures the numbers stay reasonably small and the prime makes accidental multiples a lot less likely
 
 N = dace.symbol('N')
-sz = 80000
+sz = 64
 
 blockDim = 256
 gridDim = 2048
@@ -38,10 +39,10 @@ auto.auto_optimize(sdfg, dace.DeviceType.GPU)
 
 
 A = np.ones((sz))
-gaussInit(A)
+# gaussInit(A)
 gA = cupy.asarray(A)
 B = np.ones((sz))
-gaussInit(B)
+# gaussInit(B)
 gB = cupy.asarray(B)
 
 r = cupy.array([float(0)])
@@ -53,6 +54,7 @@ print(res)
 MaxTs = dace.symbol('MaxTs')
 GridDim = dace.symbol('GridDim')
 BlockDim = dace.symbol('BlockDim')
+WarpSize = dace.symbol('WarpSize')
 
 
 sdfg2 = dace.SDFG('reduction')
@@ -62,6 +64,7 @@ sdfg2.add_array('__return', shape=[1], dtype=dace.float64, storage=dace.StorageT
 sdfg2.add_symbol('MaxTs', stype= dace.int32)
 sdfg2.add_symbol('GridDim', stype= dace.int32)
 sdfg2.add_symbol('BlockDim', stype= dace.int32)
+sdfg2.add_symbol('WarpSize', stype= dace.int32)
 
 def InitOut(state, i_out):
     
@@ -86,7 +89,7 @@ def GridStrideLoop(state, i1, i2, mS):
     
 def WarpWiseReduction(state):
     tasklet_code = '''
-    int offset = 1 << k;
+    int offset = 1 << (4-k);
     accOut += __shfl_down_sync(0xFFFFFFFF, accOut, offset);
     '''
     
@@ -95,14 +98,25 @@ def WarpWiseReduction(state):
     
     tasklet, me, mx = state.add_mapped_tasklet(
         name = 'warpwise_Reduction',
-        map_ranges={'k':'5:0'},
+        map_ranges={'k':'0:5'},
         inputs= {'accIn': dace.Memlet.from_array('mySum',state.parent.arrays['mySum'])},
         outputs= {'accOut': dace.Memlet.from_array('mySum', state.parent.arrays['mySum'])},
         code=tasklet_code,
         language=dace.dtypes.Language.CPP,
         external_edges= True
     )
+
+def WriteBackState(state, mS, r):
     
+    src_node = state.add_read(mS)
+    dst_node = state.add_write(r)
+    
+    me, mx = state.add_map('Write_back', dict(wId = '0'))
+    tasklet = state.add_tasklet('Add', {'in1'}, {'out'}, 'out += in1')  #this assumes that dace's adds are atomic (and that += is associative)
+    
+    
+    state.add_memlet_path(src_node, me, tasklet, dst_conn= 'in1', memlet=dace.Memlet(data=mS, subset='0'))
+    state.add_memlet_path(tasklet, mx, dst_node, src_conn='out', memlet=dace.Memlet(data=r, subset='0'))       
 
 ##################################
 # Create the GPU scheduleing state
@@ -135,8 +149,16 @@ GridStrideLoop(m_state, 'sA', 'sB', 'mySum')
 wwr_state= gpu_sdfg.add_state('WarpWise_Reduction')
 WarpWiseReduction(wwr_state)
 
+write_back_state = gpu_sdfg.add_state('Write_Back')
+WriteBackState(write_back_state, 'mySum', 'sRes')
+
+random_end_state = gpu_sdfg.add_state('RandomEndState')
+
 
 gpu_sdfg.add_edge(m_state, wwr_state, dace.InterstateEdge())
+gpu_sdfg.add_edge(wwr_state, write_back_state, dace.InterstateEdge('j % WarpSize == 0'))
+gpu_sdfg.add_edge(wwr_state, random_end_state, dace.InterstateEdge('j % WarpSize != 0'))
+gpu_sdfg.add_edge(write_back_state, random_end_state, dace.InterstateEdge())
 
 ##################################
 
@@ -162,7 +184,7 @@ for n in gpuCallState.nodes():
         
 
 
-res2 = sdfg2(A=gA, B=gB, __return=r, N=sz, MaxTs = blockDim * gridDim, BlockDim = blockDim, GridDim = gridDim)
+res2 = sdfg2(A=gA, B=gB, __return=r, N=sz, MaxTs = blockDim * gridDim, BlockDim = blockDim, GridDim = gridDim, WarpSize= 32)
 print(res2)
 
 #assert(np.allclose(res, res2))
