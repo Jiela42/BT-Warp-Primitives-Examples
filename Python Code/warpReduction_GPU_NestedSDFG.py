@@ -18,7 +18,9 @@ def gaussInit(a):
 N = dace.symbol('N')
 sz = 64
 
-blockDim = 256
+
+# Careful: Number of threads aka BlockDim must be bigger than number of elements!
+blockDim = 64
 gridDim = 2048
 
 
@@ -78,9 +80,9 @@ def GridStrideLoop(state, i1, i2, mS):
     src_A = state.add_read(i1)
     src_B = state.add_read(i2)
     
-    dst_node = state.add_write(mS)
+    dst_node = state.add_access(mS)
     
-    me,mx = state.add_map('gridSized_strides_map', dict(tId = 'i*BlockDim+j:N:tId*MaxTs'))
+    me,mx = state.add_map('gridSized_strides_map', dict(tId = 'i*BlockDim+j:N:MaxTs'))
     tasklet = state.add_tasklet('mult', {'in1', 'in2'}, {'out'},  'out += in1 * in2')
     
     state.add_memlet_path(src_A, me, tasklet, dst_conn='in1', memlet=dace.Memlet(data=i1, subset='tId'))
@@ -90,7 +92,7 @@ def GridStrideLoop(state, i1, i2, mS):
 def WarpWiseReduction(state):
     tasklet_code = '''
     int offset = 1 << (4-k);
-    accOut += __shfl_down_sync(0xFFFFFFFF, accOut, offset);
+    accIn += __shfl_down_sync(0xFFFFFFFF, accIn, offset);
     '''
     
     # for loop
