@@ -76,6 +76,10 @@ def InitOut(state, i_out):
     state.add_edge(tasklet, None, dst_node, 'out', memlet= dace.Memlet(data= i_out, subset = '0'))
 
 def GridStrideLoop(state, i1, i2, mS):
+
+    init_tasklet = state.add_tasklet('init_sum', {}, {'__out'}, '__out = 0')
+    sum_node = state.add_access(mS)
+    state.add_edge(init_tasklet, '__out', sum_node, None, dace.Memlet.from_array(mS, state.parent.arrays[mS]))
     
     src_A = state.add_read(i1)
     src_B = state.add_read(i2)
@@ -83,10 +87,11 @@ def GridStrideLoop(state, i1, i2, mS):
     dst_node = state.add_access(mS)
     
     me,mx = state.add_map('gridSized_strides_map', dict(tId = 'i*BlockDim+j:N:MaxTs'))
-    tasklet = state.add_tasklet('mult', {'in1', 'in2'}, {'out'},  'out += in1 * in2')
+    tasklet = state.add_tasklet('mult', {'in1', 'in2', '__in3'}, {'out'},  'out = in1 * in2 + __in3')
     
     state.add_memlet_path(src_A, me, tasklet, dst_conn='in1', memlet=dace.Memlet(data=i1, subset='tId'))
     state.add_memlet_path(src_B, me, tasklet, dst_conn='in2', memlet=dace.Memlet(data=i2, subset = 'tId'))
+    state.add_memlet_path(sum_node, me, tasklet, dst_conn='__in3', memlet=dace.Memlet.from_array(mS, state.parent.arrays[mS]))
     state.add_memlet_path(tasklet, mx, dst_node, src_conn='out', memlet=dace.Memlet(data=mS, subset='0'))
     
 def WarpWiseReduction(state):
@@ -113,12 +118,14 @@ def WriteBackState(state, mS, r):
     src_node = state.add_read(mS)
     dst_node = state.add_write(r)
     
-    me, mx = state.add_map('Write_back', dict(wId = '0'))
-    tasklet = state.add_tasklet('Add', {'in1'}, {'out'}, 'out += in1')  #this assumes that dace's adds are atomic (and that += is associative)
+    # You don't need a map here and the assumption is wrong. You need WCR for atomic writes.
+    # In this case, you don't even need a tasklet, you can copy directly between the access nodes.
+    # me, mx = state.add_map('Write_back', dict(wId = '0'))
+    # tasklet = state.add_tasklet('Add', {'in1'}, {'out'}, 'out += in1')  #this assumes that dace's adds are atomic (and that += is associative)
     
-    
-    state.add_memlet_path(src_node, me, tasklet, dst_conn= 'in1', memlet=dace.Memlet(data=mS, subset='0'))
-    state.add_memlet_path(tasklet, mx, dst_node, src_conn='out', memlet=dace.Memlet(data=r, subset='0'))       
+    # state.add_memlet_path(src_node, me, tasklet, dst_conn= 'in1', memlet=dace.Memlet(data=mS, subset='0'))
+    # state.add_memlet_path(tasklet, mx, dst_node, src_conn='out', memlet=dace.Memlet(data=r, subset='0')) 
+    state.add_nedge(src_node, dst_node, dace.Memlet(f"{r}", wcr="lambda x, y: x + y"))      
 
 ##################################
 # Create the GPU scheduleing state
@@ -149,7 +156,31 @@ m_state= gpu_sdfg.add_state('Mult')
 GridStrideLoop(m_state, 'sA', 'sB', 'mySum')
 
 wwr_state= gpu_sdfg.add_state('WarpWise_Reduction')
-WarpWiseReduction(wwr_state)
+# WarpWiseReduction(wwr_state)
+# tasklet_code = '''
+#     int offset = 1 << (4-k);
+#     accIn += __shfl_down_sync(0xFFFFFFFF, accIn, offset);
+#     '''
+    
+#     # for loop
+#     # hardcode entire loop
+    
+#     tasklet, me, mx = state.add_mapped_tasklet(
+#         name = 'warpwise_Reduction',
+#         map_ranges={'k':'0:5'},
+#         inputs= {'accIn': dace.Memlet.from_array('mySum',state.parent.arrays['mySum'])},
+#         outputs= {'accOut': dace.Memlet.from_array('mySum', state.parent.arrays['mySum'])},
+#         code=tasklet_code,
+#         language=dace.dtypes.Language.CPP,
+#         external_edges= True
+mSum = wwr_state.add_access('mySum')
+wtasklet = wwr_state.add_tasklet('warpwise_Reduction',
+                                 {}, {'__out'},
+                                 f"__out = __shfl_down_sync(0xFFFFFFFF, {mSum.data}, offset);",
+                                 dace.Language.CPP)
+wwr_state.add_edge(wtasklet, '__out', mSum, None, dace.Memlet(f"{mSum.data}", wcr="lambda x, y: x + y"))
+
+_, _, after_state = gpu_sdfg.add_loop(m_state, wwr_state, None, 'offset', 'WarpSize / 2', 'offset > 0', 'offset / 2')
 
 write_back_state = gpu_sdfg.add_state('Write_Back')
 WriteBackState(write_back_state, 'mySum', 'sRes')
@@ -157,9 +188,11 @@ WriteBackState(write_back_state, 'mySum', 'sRes')
 random_end_state = gpu_sdfg.add_state('RandomEndState')
 
 
-gpu_sdfg.add_edge(m_state, wwr_state, dace.InterstateEdge())
-gpu_sdfg.add_edge(wwr_state, write_back_state, dace.InterstateEdge('j % WarpSize == 0'))
-gpu_sdfg.add_edge(wwr_state, random_end_state, dace.InterstateEdge('j % WarpSize != 0'))
+# gpu_sdfg.add_edge(m_state, wwr_state, dace.InterstateEdge())
+# gpu_sdfg.add_edge(wwr_state, write_back_state, dace.InterstateEdge('j % WarpSize == 0'))
+# gpu_sdfg.add_edge(wwr_state, random_end_state, dace.InterstateEdge('j % WarpSize != 0'))
+gpu_sdfg.add_edge(after_state, write_back_state, dace.InterstateEdge('j % WarpSize == 0'))
+gpu_sdfg.add_edge(after_state, random_end_state, dace.InterstateEdge('j % WarpSize != 0'))
 gpu_sdfg.add_edge(write_back_state, random_end_state, dace.InterstateEdge())
 
 ##################################
