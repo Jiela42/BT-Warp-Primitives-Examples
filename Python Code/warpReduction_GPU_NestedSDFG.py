@@ -16,7 +16,7 @@ def gaussInit(a):
         a[i] = i % 131          # The modulo ensures the numbers stay reasonably small and the prime makes accidental multiples a lot less likely
 
 N = dace.symbol('N')
-sz = 100000
+sz = 100000000
 
 
 # Careful: Number of threads aka BlockDim must be bigger than number of elements!
@@ -63,6 +63,12 @@ sdfg2.add_symbol('GridDim', stype= dace.int32)
 sdfg2.add_symbol('BlockDim', stype= dace.int32)
 sdfg2.add_symbol('WarpSize', stype= dace.int32)
 
+def Init(state, m):
+    dst_node = state.add_write(m)
+    init_t = state.add_tasklet('init_out', {}, {'__out'}, '__out = 0')
+    
+    state.add_edge (init_t, '__out', dst_node, None, dace.Memlet(data=m))
+    
 
 def GridStrideLoop(state, i1, i2, mS):
 
@@ -112,9 +118,18 @@ gpu_sdfg.add_array('sRes', shape=[1], dtype=dace.float64, storage=StorageType.GP
 gpu_sdfg.add_scalar('mySum', dtype=dace.float64, storage=StorageType.Register, transient=True)
 
 # create inner sdfg
+entry_state = gpu_sdfg.add_state('Entry_node')
+
+init_sRes = gpu_sdfg.add_state('Init_sRes')
+Init(init_sRes, 'sRes')
 
 m_state= gpu_sdfg.add_state('Mult')
 GridStrideLoop(m_state, 'sA', 'sB', 'mySum')
+
+gpu_sdfg.add_edge(entry_state, init_sRes, dace.InterstateEdge('j+i == 0'))
+gpu_sdfg.add_edge(entry_state, m_state, dace.InterstateEdge('j+i != 0'))
+
+gpu_sdfg.add_edge(init_sRes, m_state, dace.InterstateEdge())
 
 wwr_state= gpu_sdfg.add_state('WarpWise_Reduction')
 
