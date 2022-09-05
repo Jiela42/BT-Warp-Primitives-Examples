@@ -177,10 +177,10 @@ transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient)
 access_node = next(n for n in state.nodes() if isinstance(n, dace.nodes.AccessNode) and n.data == transient)
 
 
-# MapFusion.apply_to(sdfg,
-#                    first_map_exit = mult_map_exit,
-#                    array = access_node,
-#                    second_map_entry = reduction_map_entry)
+MapFusion.apply_to(sdfg,
+                   first_map_exit = mult_map_exit,
+                   array = access_node,
+                   second_map_entry = reduction_map_entry)
 
 # sdfg.apply_transformations_repeated(MapFusion)
 
