@@ -1,8 +1,10 @@
 
+from cProfile import label
 from multiprocessing import reduction
 import dace
 from dace import memlet
 from dace.dtypes import StorageType
+from dace.sdfg import nodes
 from dace.sdfg.sdfg import InterstateEdge
 from dace.transformation.dataflow import MapFusion
 from dace.transformation.interstate import StateFusion
@@ -26,7 +28,7 @@ def checksum(A,B):
 
 
 N = dace.symbol('N')
-sz = 150000
+sz = 15
 
 blockDim = 4
 gridDim = 2
@@ -34,7 +36,7 @@ gridDim = 2
 A = np.ones(sz)
 gaussInit(A)
 B = np.ones(sz)
-# gaussInit(B)
+gaussInit(B)
 
 r = np.array([float(0)])
 
@@ -72,13 +74,13 @@ def multiply(state, inA, inB, temp):
     node_B = state.add_read(inB)
     node_tOut = state.add_write(temp)
 
-    m_me,m_mx = state.add_map('Mult_maps', dict(i='0:N'))
+    m_me,m_mx = state.add_map('tripple_map', {'i': '0:min(int_ceil(N, BlockDim), GridDim)', 'j': '0:BlockDim', 'tId': 'i*BlockDim+j:N:MaxTs'})
 
     mtasklet = state.add_tasklet('mult', {'in1', 'in2'}, {'out'}, 'out = in1 * in2')
 
-    state.add_memlet_path(node_A, m_me, mtasklet, dst_conn = 'in1', memlet=dace.Memlet(data='A', subset='i'))
-    state.add_memlet_path(node_B, m_me, mtasklet, dst_conn='in2', memlet=dace.Memlet(data='B', subset='i'))
-    state.add_memlet_path(mtasklet, m_mx, node_tOut, src_conn= 'out', memlet=dace.Memlet(data='temp1', subset= 'i'))
+    state.add_memlet_path(node_A, m_me, mtasklet, dst_conn = 'in1', memlet=dace.Memlet(data='A', subset='tId'))
+    state.add_memlet_path(node_B, m_me, mtasklet, dst_conn='in2', memlet=dace.Memlet(data='B', subset='tId'))
+    state.add_memlet_path(mtasklet, m_mx, node_tOut, src_conn= 'out', memlet=dace.Memlet(data='temp1', subset= 'tId'))
 
 multiplication_state = sdfg.add_state('Mult_state')
 multiply(multiplication_state, 'A', 'B', 'temp1')
@@ -141,39 +143,46 @@ main_reduction_state.add_memlet_path(nsdfg, r_mx, node_return, memlet=dace.Memle
 sdfg.add_edge(init_state, multiplication_state, InterstateEdge())
 sdfg.add_edge(multiplication_state, main_reduction_state, InterstateEdge())
 
+sdfg.apply_transformations_repeated(MapExpansion)
+
+###################
+# Commenting out the following gives us a previous state of the SDFG
+# It is in here to make working with mapFusion easier
+
 StateFusion.apply_to(sdfg,
                      first_state = multiplication_state,
                      second_state = main_reduction_state)
 
-sdfg.apply_transformations(MapExpansion)
 sdfg.apply_transformations_repeated(StateFusion)
 
 sdfg.apply_transformations(InlineSDFG)
 
-state = sdfg.node(0)
 
 
-# mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'Mult_maps')
-# reduction_map_entry = next(n for n in state.nodes() if isinstance(n,dace.nodes.MapEntry) and n.label == 'Reduction_maps')
-
-# transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient)
-# access_node = next(n for n in state.nodes() if isinstance(n, dace.nodes.AccessNode) and n.data == transient)
-
+state = next(n for n in sdfg.states() if n.label == 'Mult_state')
+###################
 
 # sdfg.apply_transformations(MapTiling)
 
-# # MapTiling.apply_to(sdfg,
-# #                    first_map_exit = mult_map_exit,
-# #                    array = access_node,
-# #                    second_map_entry = reduction_map_entry)
+# MapTiling.apply_to(sdfg,
+#                    first_map_exit = mult_map_exit,
+#                    array = access_node,
+#                    second_map_entry = reduction_map_entry)
 
-# # MapFusion.apply_to(sdfg,
-# #                    first_map_exit = mult_map_exit,
-# #                    array = access_node,
-# #                    second_map_entry = reduction_map_entry)
+
+mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'tripple_map')
+reduction_map_entry = next(n for n in state.nodes() if isinstance(n,dace.nodes.MapEntry) and n.label == 'Reduction_maps')
+
+transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient)
+access_node = next(n for n in state.nodes() if isinstance(n, dace.nodes.AccessNode) and n.data == transient)
+
+
+# MapFusion.apply_to(sdfg,
+#                    first_map_exit = mult_map_exit,
+#                    array = access_node,
+#                    second_map_entry = reduction_map_entry)
 
 # sdfg.apply_transformations_repeated(MapFusion)
-
 
 res = sdfg(A=A, B=B, __return=r, N=sz, MaxTs= blockDim*gridDim, BlockDim=blockDim, GridDim=gridDim)
 
