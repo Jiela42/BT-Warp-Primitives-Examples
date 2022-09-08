@@ -100,21 +100,25 @@ reduction_sdfg.add_array('rOut', shape=[1], dtype=dace.float64)
         
 def Tile_and_Load(state, i1, mS):
 
-    init_tasklet = state.add_tasklet('init_sum', {}, {'__out'}, '__out = 0')
-    sum_node = state.add_access(mS)
-    state.add_edge(init_tasklet, '__out', sum_node, None, dace.Memlet.from_array(mS, state.parent.arrays[mS]))
+    # init_tasklet = state.add_tasklet('init_sum', {}, {'__out'}, '__out = 0')
+    # sum_node = state.add_access(mS)
+    # state.add_edge(init_tasklet, '__out', sum_node, None, dace.Memlet.from_array(mS, state.parent.arrays[mS]))
     
     src_A = state.add_read(i1)
     
     dst_node = state.add_access(mS)
     
     me,mx = state.add_map('gridSized_strides_map', dict(tId = 'i*BlockDim+j:N:MaxTs'))
-    tasklet = state.add_tasklet('tiling', {'in1', '__in3'}, {'out'},  'out = in1 + __in3')
+    # tasklet = state.add_tasklet('tiling', {'in1', '__in3'}, {'out'},  'out = in1 + __in3')
+    tasklet = state.add_tasklet('tiling', {'in1'}, {'out'},  'out += in1')
+    
     
     state.add_memlet_path(src_A, me, tasklet, dst_conn='in1', memlet=dace.Memlet(data=i1, subset='tId'))
-    state.add_memlet_path(sum_node, me, tasklet, dst_conn='__in3', memlet=dace.Memlet.from_array(mS, state.parent.arrays[mS]))
+    # state.add_memlet_path(sum_node, me, tasklet, dst_conn='__in3', memlet=dace.Memlet.from_array(mS, state.parent.arrays[mS]))
     state.add_memlet_path(tasklet, mx, dst_node, src_conn='out', memlet=dace.Memlet(data=mS, subset='0'))
 
+    # state.add_memlet_path(sum_node, r_me, me, tasklet, dst_conn='__in3', memlet=dace.Memlet.from_array(mS, state.parent.arrays[mS]))
+    
 def Reduce_and_Write_Back(state, mS, r):
 
     src_node = state.add_read(mS)
@@ -186,8 +190,6 @@ MapFusion.apply_to(sdfg,
                    second_map_entry = reduction_map_entry)
 
 
-# One issue might be that I am looking for the transient, but there are two!
-
 mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'tripple_map_j')
 reduction_map_entry = next(n for n in state.nodes() if isinstance(n,dace.nodes.MapEntry) and n.label == 'Reduction_maps_j')
 
@@ -202,6 +204,16 @@ MapFusion.apply_to(sdfg,
                    second_map_entry = reduction_map_entry)
 
 
+mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'tripple_map_tId')
+reduction_map_entry = next(n for n in state.nodes() if isinstance(n,dace.nodes.MapEntry) and n.label == 'gridSized_strides_map')
+
+transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient and aname == '__s1_n6OUT_temp1_n7IN_temp1')
+access_node = next(n for n in state.nodes() if isinstance(n, dace.nodes.AccessNode) and n.data == transient)
+
+MapFusion.apply_to(sdfg,
+                   first_map_exit = mult_map_exit,
+                   array = access_node,
+                   second_map_entry = reduction_map_entry)
 
 
 # sdfg.apply_transformations_repeated(MapFusion)
