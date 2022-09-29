@@ -12,7 +12,9 @@ from dace.transformation.dataflow import OTFMapFusion
 from dace.transformation.dataflow import MapTiling
 from dace.transformation.dataflow import MapExpansion
 from dace.transformation.interstate import InlineSDFG
-
+from dace.libraries.standard.nodes import Reduce
+import GPU_tiling_transformation
+from dace.sdfg import utils as sdutil
 import numpy as np
 
 
@@ -43,6 +45,7 @@ r = np.array([float(0)])
 MaxTs = dace.symbol('MaxTs')
 GridDim = dace.symbol('GridDim')
 BlockDim = dace.symbol('BlockDim')
+WarpSize = dace.symbol('WarpSize')
 
 sdfg = dace.SDFG('reduction')
 sdfg.add_array('A', shape=[N], dtype=dace.float64)
@@ -52,6 +55,7 @@ sdfg.add_array('__return', shape=[1], dtype=dace.float64)
 sdfg.add_symbol('MaxTs', stype= dace.int32)
 sdfg.add_symbol('GridDim', stype= dace.int32)
 sdfg.add_symbol('BlockDim', stype= dace.int32)
+sdfg.add_symbol('Warpsize', stype= dace.int32)
 
 #-----------------------------------------------------------
 # initialize Return
@@ -74,7 +78,7 @@ def multiply(state, inA, inB, temp):
     node_B = state.add_read(inB)
     node_tOut = state.add_write(temp)
 
-    m_me,m_mx = state.add_map('tripple_map', {'i': '0:min(int_ceil(N, BlockDim), GridDim)', 'j': '0:BlockDim', 'tId': 'i*BlockDim+j:N:MaxTs'})
+    m_me,m_mx = state.add_map('Mult_maps', dict(tId='0:N'))
 
     mtasklet = state.add_tasklet('mult', {'in1', 'in2'}, {'out'}, 'out = in1 * in2')
 
@@ -87,62 +91,24 @@ multiply(multiplication_state, 'A', 'B', 'temp1')
 
 #-----------------------------------------------------------
 # The Reduction part (nested SDFG)
-# This simulates the controlflow that we expect to see on a GPU (rTemp acts as array containing all mySum)
+reduction_state = sdfg.add_state()
 
-main_reduction_state = sdfg.add_state('Outer_reduction_state')
-r_me, r_mx = main_reduction_state.add_map('Reduction_maps',  {'i': '0:min(int_ceil(N, BlockDim), GridDim)', 'j': '0:BlockDim'}) 
+aA = reduction_state.add_access('temp1')
+aRet = reduction_state.add_access('__return')
 
-reduction_sdfg = dace.SDFG('Reduction_SDFG')
+red = Reduce(wcr = 'lambda a,b: a + b', identity = 0)
+red.implementation = 'CUDA(shuffle)'
 
-reduction_sdfg.add_array('rIn', shape=[N], dtype=dace.float64)
-reduction_sdfg.add_array('rSum', shape=[1], dtype=dace.float64, transient=True, storage=StorageType.Register)
-reduction_sdfg.add_array('rOut', shape=[1], dtype=dace.float64)
-        
-def Tile_and_Load(state, i1, mS):
-
-    init_tasklet = state.add_tasklet('init_sum', {}, {'__out'}, '__out = 0')
-    sum_node = state.add_access(mS)
-    state.add_edge(init_tasklet, '__out', sum_node, None, dace.Memlet.from_array(mS, state.parent.arrays[mS]))
-    
-    src_A = state.add_read(i1)
-    
-    dst_node = state.add_access(mS)
-    
-    me,mx = state.add_map('gridSized_strides_map', dict(tId = 'i*BlockDim+j:N:MaxTs'))
-    tasklet = state.add_tasklet('tiling', {'in1', '__in3'}, {'out'},  'out = in1 + __in3')
-    
-    state.add_memlet_path(src_A, me, tasklet, dst_conn='in1', memlet=dace.Memlet(data=i1, subset='tId'))
-    state.add_memlet_path(sum_node, me, tasklet, dst_conn='__in3', memlet=dace.Memlet.from_array(mS, state.parent.arrays[mS]))
-    state.add_memlet_path(tasklet, mx, dst_node, src_conn='out', memlet=dace.Memlet(data=mS, subset='0'))
-
-def Reduce_and_Write_Back(state, mS, r):
-
-    src_node = state.add_read(mS)
-    dst_node = state.add_write(r)
-    
-    state.add_nedge(src_node, dst_node, dace.Memlet(f"{r}", wcr="lambda x, y: x + y"))      
-
-tnl_state = reduction_sdfg.add_state('Tile_and_load')
-reduction_state = reduction_sdfg.add_state('Reduction_state')
-
-Tile_and_Load(tnl_state, 'rIn', 'rSum')
-Reduce_and_Write_Back(reduction_state, 'rSum', 'rOut')
-
-reduction_sdfg.add_edge(tnl_state, reduction_state, InterstateEdge())
+reduction_state.add_edge(aA, None, red, None, memlet= dace.Memlet.from_array('temp1', reduction_state.parent.arrays['temp1']))
+reduction_state.add_edge(red, None, aRet, None, dace.Memlet.from_array('__return', reduction_state.parent.arrays['__return']))
 
 #-----------------------------------------------------------
-# Connecting the nested SDFG
-nsdfg = main_reduction_state.add_nested_sdfg(reduction_sdfg, sdfg, {'rIn'}, {'rOut'})
-
-node_temp1 = main_reduction_state.add_read('temp1')
-node_return = main_reduction_state.add_access('__return')
-
-main_reduction_state.add_memlet_path(node_temp1, r_me, nsdfg, memlet=dace.Memlet(data='temp1', subset='0: (min(int_ceil(N, BlockDim), GridDim) * BlockDim)'), dst_conn='rIn')
-main_reduction_state.add_memlet_path(nsdfg, r_mx, node_return, memlet=dace.Memlet(data='__return', subset='0'), src_conn= 'rOut')
+# Connecting the states
 
 sdfg.add_edge(init_state, multiplication_state, InterstateEdge())
-sdfg.add_edge(multiplication_state, main_reduction_state, InterstateEdge())
+sdfg.add_edge(multiplication_state, reduction_state, InterstateEdge())
 
+sdfg.expand_library_nodes()
 sdfg.apply_transformations_repeated(MapExpansion)
 
 #-----------------------------------------------------------
@@ -151,18 +117,29 @@ sdfg.apply_transformations_repeated(MapExpansion)
 
 StateFusion.apply_to(sdfg,
                      first_state = multiplication_state,
-                     second_state = main_reduction_state)
-
+                     second_state = reduction_state)
+sdfg.view()
 sdfg.apply_transformations_repeated(StateFusion)
 
 sdfg.apply_transformations(InlineSDFG)
+inlines = sdutil.inline_sdfgs(sdfg)
+print (inlines)
+sdfg.view()
 
-
+#-----------------------------------------------------------
+# Here we try to apply the auto-tiling
 
 state = next(n for n in sdfg.states() if n.label == 'Mult_state')
-#-----------------------------------------------------------
 
-mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'tripple_map')
+mult_map = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapEntry) and n.label == 'Mult_maps')
+GPU_tiling_transformation.GPU_Tiling.apply_to(sdfg, map_entry= mult_map)
+
+#-----------------------------------------------------------
+# Merging the Maps
+ 
+state = next(n for n in sdfg.states() if n.label == 'Mult_state')
+
+mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'GPU_map')
 reduction_map_entry = next(n for n in state.nodes() if isinstance(n,dace.nodes.MapEntry) and n.label == 'Reduction_maps')
 
 transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient)
@@ -178,10 +155,10 @@ MapFusion.apply_to(sdfg,
                    second_map_entry = reduction_map_entry)
 
 
-mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'tripple_map_j')
+mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'Block_map')
 reduction_map_entry = next(n for n in state.nodes() if isinstance(n,dace.nodes.MapEntry) and n.label == 'Reduction_maps_j')
 
-transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient and aname == '__s1_n9OUT_temp1_n4IN_temp1')
+transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient and aname == '__s1_n19OUT_temp1_n20IN_temp1')
 access_node = next(n for n in state.nodes() if isinstance(n, dace.nodes.AccessNode) and n.data == transient)
 
 MapFusion.apply_to(sdfg,
@@ -189,11 +166,10 @@ MapFusion.apply_to(sdfg,
                    array = access_node,
                    second_map_entry = reduction_map_entry)
 
-
-mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'tripple_map_tId')
+mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'Mult_maps')
 reduction_map_entry = next(n for n in state.nodes() if isinstance(n,dace.nodes.MapEntry) and n.label == 'gridSized_strides_map')
 
-transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient and aname == '__s1_n6OUT_temp1_n7IN_temp1')
+transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient and aname == '__s1_n3OUT_temp1_n17IN_temp1')
 access_node = next(n for n in state.nodes() if isinstance(n, dace.nodes.AccessNode) and n.data == transient)
 
 MapFusion.apply_to(sdfg,
@@ -202,10 +178,9 @@ MapFusion.apply_to(sdfg,
                    second_map_entry = reduction_map_entry)
 
 sdfg.simplify()
+#-----------------------------------------------------------
 
-# sdfg.apply_transformations_repeated(MapFusion)
-
-res = sdfg(A=A, B=B, __return=r, N=sz, MaxTs= blockDim*gridDim, BlockDim=blockDim, GridDim=gridDim)
+res = sdfg(A=A, B=B, __return=r, N=sz, MaxTs= blockDim*gridDim, BlockDim=blockDim, GridDim=gridDim, WarpSize= 32)
 
 
 print(res)

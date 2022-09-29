@@ -26,7 +26,7 @@ gridDim = 2048
 
 @dace.program
 def inner_product_python(A: dace.float64[N], B: dace.float64[N]):
-    return np.add.reduce(A*B)
+    return np.add.reduce(A)
 
 
 sdfg = inner_product_python.to_sdfg(simplify=True)
@@ -86,65 +86,4 @@ res2 = sdfg2(A=gA, B=gB, __return=r, N=sz, MaxTs = blockDim * gridDim, BlockDim 
 print("Reduce_Library_Node")
 print(res2)
 
-# assert(np.allclose(res, res2))
-
-##################
-##################
-
-# Old custom code version
-
-# sdfgCustom = dace.SDFG('reduction')
-# sdfgCustom.add_array('A', shape=[N], dtype=dace.float64, storage=dace.StorageType.GPU_Global)
-# sdfgCustom.add_array('B', shape=[N], dtype=dace.float64, storage=dace.StorageType.GPU_Global)
-# sdfgCustom.add_array('__return', shape=[1], dtype=dace.float64, storage=dace.StorageType.GPU_Global)
-
-
-# def KernelCall(state):
-
-#     tasklet_code = '''
-#     if (i + j == 0) {
-#         out[0] = double(0);
-#     }
-#     double sum = double(0);
-#     for (int id = i * 256 + j; id < N; id += blockDim.x * gridDim.x) {
-#         sum += in1[id] * in2[id];
-#     }
-#     for (int offset = warpSize/2; offset > 0; offset /= 2) {
-#         sum += __shfl_down_sync(0xFFFFFFFF, sum, offset);
-#     }
-#     if (j % warpSize == 0) {
-#         atomicAdd(out, sum);
-#     }
-#     '''
-
-#     tasklet, me, mx = state.add_mapped_tasklet(
-#         name='callingKernel',
-#         map_ranges={'i': '0:min(int_ceil(N, 256), 2048)', 'j': '0:256'},            # i is blockIdx.x and j is threadIdx.x
-#         inputs={'in1': dace.Memlet('A[0:N]'), 'in2': dace.Memlet('B[0:N]')},
-#         outputs={'out': dace.Memlet('__return[0]')},
-#         code=tasklet_code,
-#         language=dace.dtypes.Language.CPP,
-#         external_edges=True
-#     )
-#     out_conn = {'out': dace.pointer(dace.float64)}
-#     tasklet.out_connectors = out_conn
-
-#     me.map.schedule = dace.dtypes.ScheduleType.GPU_Device
-
-# callState = sdfgCustom.add_state()
-# KernelCall(callState)
-
-# sdfgCustom.apply_transformations_repeated(MapExpansion)
-
-# for n in callState.nodes():
-#     if isinstance(n, nodes.MapEntry) and "j" in n.map.params:
-#         n.map.schedule = dace.dtypes.ScheduleType.GPU_ThreadBlock
-        
-# resCustom = sdfgCustom(A=gA, B=gB, N=sz)
-
-# print("Custom Code")
-# print(resCustom)
-
-# assert(np.allclose(res, resCustom))
-
-
+assert(np.allclose(res, res2))

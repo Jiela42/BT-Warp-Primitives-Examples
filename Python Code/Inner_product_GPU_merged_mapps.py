@@ -29,10 +29,10 @@ def checksum(A,B):
 
 
 N = dace.symbol('N')
-sz = 10000
+sz = 10
 
-blockDim = 256
-gridDim = 2048
+blockDim = 4
+gridDim = 2
 
 A1 = np.ones(sz)
 gaussInit(A1)
@@ -151,10 +151,15 @@ sdfg.apply_transformations_repeated(MapExpansion)
 
 for state in sdfg.states():
     for n in state.nodes():
+        if isinstance(n, nodes.MapEntry) and "i" in n.map.params:
+            n.map.schedule = dace.dtypes.ScheduleType.GPU_Device
+
+for state in sdfg.states():
+    for n in state.nodes():
         if isinstance(n, nodes.MapEntry) and "j" in n.map.params:
             n.map.schedule = dace.dtypes.ScheduleType.GPU_ThreadBlock
 
-# sdfg.view()
+sdfg.view()
 
 
 
@@ -215,6 +220,7 @@ MapFusion.apply_to(sdfg,
                    second_map_entry = reduction_map_entry)
 
 sdfg.simplify()
+sdfg.apply_gpu_transformations()
 
 # for _, arr in sdfg.arrays.items():
 #     if not arr.transient:
