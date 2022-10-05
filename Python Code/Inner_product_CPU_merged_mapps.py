@@ -12,6 +12,7 @@ from dace.transformation.dataflow import OTFMapFusion
 from dace.transformation.dataflow import MapTiling
 from dace.transformation.dataflow import MapExpansion
 from dace.transformation.interstate import InlineSDFG
+from dace.sdfg import utils as sdutil
 
 import numpy as np
 
@@ -161,50 +162,30 @@ sdfg.apply_transformations(InlineSDFG)
 
 state = next(n for n in sdfg.states() if n.label == 'Mult_state')
 #-----------------------------------------------------------
+# Fusing the maps
 
-mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'tripple_map')
-reduction_map_entry = next(n for n in state.nodes() if isinstance(n,dace.nodes.MapEntry) and n.label == 'Reduction_maps')
+pattern = sdutil.node_path_graph(dace.nodes.MapExit, dace.nodes.AccessNode, dace.nodes.MapEntry)
+from dace.transformation.passes import pattern_matching as pm
+for i in range(3):
+    subgraph = next(n for n in pm.enumerate_matches(sdfg, pattern))
+    # print("Current Match", subgraph.graph.label, ". Nodes:", subgraph.nodes())
 
-transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient)
-access_node = next(n for n in state.nodes() if isinstance(n, dace.nodes.AccessNode) and n.data == transient)
+    mult_map_exit = next(n for n in subgraph.nodes() if isinstance(n, dace.nodes.MapExit))
+    reduction_map_entry = next(n for n in subgraph.nodes() if isinstance(n,dace.nodes.MapEntry))
 
+    access_node = next(n for n in subgraph.nodes() if isinstance(n, dace.nodes.AccessNode))
 
-from dace.sdfg.propagation import propagate_memlets_sdfg
-propagate_memlets_sdfg(sdfg)
+    from dace.sdfg.propagation import propagate_memlets_sdfg
+    propagate_memlets_sdfg(sdfg)
 
-MapFusion.apply_to(sdfg,
-                   first_map_exit = mult_map_exit,
-                   array = access_node,
-                   second_map_entry = reduction_map_entry)
-
-
-mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'tripple_map_j')
-reduction_map_entry = next(n for n in state.nodes() if isinstance(n,dace.nodes.MapEntry) and n.label == 'Reduction_maps_j')
-
-transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient and aname == '__s1_n9OUT_temp1_n4IN_temp1')
-access_node = next(n for n in state.nodes() if isinstance(n, dace.nodes.AccessNode) and n.data == transient)
-
-MapFusion.apply_to(sdfg,
-                   first_map_exit = mult_map_exit,
-                   array = access_node,
-                   second_map_entry = reduction_map_entry)
-
-
-mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'tripple_map_tId')
-reduction_map_entry = next(n for n in state.nodes() if isinstance(n,dace.nodes.MapEntry) and n.label == 'gridSized_strides_map')
-
-transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient and aname == '__s1_n6OUT_temp1_n7IN_temp1')
-access_node = next(n for n in state.nodes() if isinstance(n, dace.nodes.AccessNode) and n.data == transient)
-
-MapFusion.apply_to(sdfg,
-                   first_map_exit = mult_map_exit,
-                   array = access_node,
-                   second_map_entry = reduction_map_entry)
+    MapFusion.apply_to(sdfg,
+                    first_map_exit = mult_map_exit,
+                    array = access_node,
+                    second_map_entry = reduction_map_entry)
 
 sdfg.simplify()
 
-# sdfg.apply_transformations_repeated(MapFusion)
-
+#-----------------------------------------------------------
 res = sdfg(A=A, B=B, __return=r, N=sz, MaxTs= blockDim*gridDim, BlockDim=blockDim, GridDim=gridDim)
 
 

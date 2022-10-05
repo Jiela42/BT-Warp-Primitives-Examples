@@ -32,6 +32,8 @@ class GPU_Tiling(xf. SingleStateTransformation):
         map_exit = graph.exit_node(map_entry)
         old_para = self.map_entry.params[0]
         
+        #NOTE: old_para should not be __i or __j
+        
         # NOTE: Once more I am going to assume BlockDim, GridDim and MaxTs are symbols in the SDFG!
         # NOTE: how do I make sure I don't end up with aliasing?
         
@@ -42,18 +44,21 @@ class GPU_Tiling(xf. SingleStateTransformation):
         # print(para_N[0][1])
         # print(type(para_N[0][1]))
 
+        new_i = '__i' + old_para if old_para == '__i' else '__i'
+        new_j = '__j' + old_para if old_para == '__j' else '__j'
+        
         current_map = map_entry.map
-        current_map.range = subsets.Range([('i*BlockDim+j', str(para_N), 'MaxTs')])
+        current_map.range = subsets.Range([(new_i +'*BlockDim+' + new_j, str(para_N), 'MaxTs')])
         
         para_N += 1
         
-        i_map = nodes.Map(label ='GPU_map',
+        i_map = nodes.Map(label ='GPU_map_i',
                           ndrange = subsets.Range([('0', 'Min(GridDim, int_ceil(' + str(para_N) +',BlockDim))-1', '1')]),
-                          params=["i"])
+                          params=[new_i])
         
-        j_map = nodes.Map(label= 'Block_map',
+        j_map = nodes.Map(label= 'Block_map_j',
                           ndrange= subsets.Range([('0', 'BlockDim-1' , '1')]),
-                          params=['j'])
+                          params=[new_j])
 
         i_entry = nodes.MapEntry(i_map)
         j_entry = nodes.MapEntry(j_map)
@@ -73,17 +78,6 @@ class GPU_Tiling(xf. SingleStateTransformation):
                               src_conn= edge.src_conn,
                               dst_conn = edge.dst_conn)
         
-        # for edge in graph.out_edges(map_entry):
-        #     graph.add_memlet_path(i_entry,
-        #                           j_entry,
-        #                           map_entry,
-        #                           src_conn=edge.src_conn,
-        #                           memlet= edge.data,
-        #                           dst_conn=edge.dst_conn)
-        
-        # for edge in graph.in_edges(map_exit):
-            
-        
         for edge in graph.out_edges(map_exit):
             graph.remove_edge(edge)
             graph.add_memlet_path(map_exit,
@@ -93,6 +87,7 @@ class GPU_Tiling(xf. SingleStateTransformation):
                                 src_conn=edge.src_conn,
                                 memlet= edge.data,
                                 dst_conn=edge.dst_conn)
+            
         
         return [map_entry] + [i_entry, j_entry]
 

@@ -16,6 +16,8 @@ from dace.libraries.standard.nodes import Reduce
 import GPU_tiling_transformation
 from dace.sdfg import utils as sdutil
 import numpy as np
+from dace.transformation import helpers
+from dace.transformation.passes import pattern_matching as pm
 
 
 def gaussInit(a):
@@ -69,7 +71,6 @@ def Init(state, m):
 init_state = sdfg.add_state()
 Init(init_state, '__return')
 
-
 #-----------------------------------------------------------
 # The Multiplication
 
@@ -112,21 +113,6 @@ sdfg.expand_library_nodes()
 sdfg.apply_transformations_repeated(MapExpansion)
 
 #-----------------------------------------------------------
-# Commenting out the following gives us a previous state of the SDFG
-# It is in here to make working with mapFusion easier
-
-StateFusion.apply_to(sdfg,
-                     first_state = multiplication_state,
-                     second_state = reduction_state)
-sdfg.view()
-sdfg.apply_transformations_repeated(StateFusion)
-
-sdfg.apply_transformations(InlineSDFG)
-inlines = sdutil.inline_sdfgs(sdfg)
-print (inlines)
-sdfg.view()
-
-#-----------------------------------------------------------
 # Here we try to apply the auto-tiling
 
 state = next(n for n in sdfg.states() if n.label == 'Mult_state')
@@ -135,49 +121,58 @@ mult_map = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapEntry) a
 GPU_tiling_transformation.GPU_Tiling.apply_to(sdfg, map_entry= mult_map)
 
 #-----------------------------------------------------------
-# Merging the Maps
- 
-state = next(n for n in sdfg.states() if n.label == 'Mult_state')
+# This part inlines the reduction, merges state and overall simplifies the SDFG
 
-mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'GPU_map')
-reduction_map_entry = next(n for n in state.nodes() if isinstance(n,dace.nodes.MapEntry) and n.label == 'Reduction_maps')
+StateFusion.apply_to(sdfg,
+                     first_state = multiplication_state,
+                     second_state = reduction_state)
 
-transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient)
-access_node = next(n for n in state.nodes() if isinstance(n, dace.nodes.AccessNode) and n.data == transient)
+sdfg.apply_transformations_repeated(StateFusion)
 
+sdfg.apply_transformations(InlineSDFG)
 
-from dace.sdfg.propagation import propagate_memlets_sdfg
-propagate_memlets_sdfg(sdfg)
+#-----------------------------------------------------------
+# Putting it onto the GPU
 
-MapFusion.apply_to(sdfg,
-                   first_map_exit = mult_map_exit,
-                   array = access_node,
-                   second_map_entry = reduction_map_entry)
+for _, arr in sdfg.arrays.items():
+        if not arr.transient:
+            arr.storage = dace.StorageType.GPU_Global
 
+for state in sdfg.states():
+    for n in state.nodes():
+        # TODO: find a way to un-parametrize this, such that it can be applied before Auto-tile as well!!
+        if isinstance(n, nodes.MapEntry) and "__i" in n.map.params:
+            n.map.schedule = dace.dtypes.ScheduleType.GPU_Device
 
-mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'Block_map')
-reduction_map_entry = next(n for n in state.nodes() if isinstance(n,dace.nodes.MapEntry) and n.label == 'Reduction_maps_j')
+for state in sdfg.states():
+    for n in state.nodes():
+        if isinstance(n, nodes.MapEntry) and "__j" in n.map.params:
+            n.map.schedule = dace.dtypes.ScheduleType.GPU_ThreadBlock
 
-transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient and aname == '__s1_n19OUT_temp1_n20IN_temp1')
-access_node = next(n for n in state.nodes() if isinstance(n, dace.nodes.AccessNode) and n.data == transient)
+#-----------------------------------------------------------
+# Fusing the maps
 
-MapFusion.apply_to(sdfg,
-                   first_map_exit = mult_map_exit,
-                   array = access_node,
-                   second_map_entry = reduction_map_entry)
+pattern = sdutil.node_path_graph(dace.nodes.MapExit, dace.nodes.AccessNode, dace.nodes.MapEntry)
 
-mult_map_exit = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapExit) and n.label == 'Mult_maps')
-reduction_map_entry = next(n for n in state.nodes() if isinstance(n,dace.nodes.MapEntry) and n.label == 'gridSized_strides_map')
+while(len(list(pm.enumerate_matches(sdfg, pattern)))> 0):
+    subgraph = next(n for n in pm.enumerate_matches(sdfg, pattern))
+    # print("Current Match", subgraph.graph.label, ". Nodes:", subgraph.nodes())
 
-transient = next(aname for aname, desc in sdfg.arrays.items() if desc.transient and aname == '__s1_n3OUT_temp1_n17IN_temp1')
-access_node = next(n for n in state.nodes() if isinstance(n, dace.nodes.AccessNode) and n.data == transient)
+    mult_map_exit = next(n for n in subgraph.nodes() if isinstance(n, dace.nodes.MapExit))
+    reduction_map_entry = next(n for n in subgraph.nodes() if isinstance(n,dace.nodes.MapEntry))
 
-MapFusion.apply_to(sdfg,
-                   first_map_exit = mult_map_exit,
-                   array = access_node,
-                   second_map_entry = reduction_map_entry)
+    access_node = next(n for n in subgraph.nodes() if isinstance(n, dace.nodes.AccessNode))
+
+    from dace.sdfg.propagation import propagate_memlets_sdfg
+    propagate_memlets_sdfg(sdfg)
+
+    MapFusion.apply_to(sdfg,
+                    first_map_exit = mult_map_exit,
+                    array = access_node,
+                    second_map_entry = reduction_map_entry)
 
 sdfg.simplify()
+
 #-----------------------------------------------------------
 
 res = sdfg(A=A, B=B, __return=r, N=sz, MaxTs= blockDim*gridDim, BlockDim=blockDim, GridDim=gridDim, WarpSize= 32)
