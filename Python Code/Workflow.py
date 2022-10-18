@@ -12,6 +12,7 @@ from dace.transformation.dataflow import OTFMapFusion
 from dace.transformation.dataflow import MapTiling
 from dace.transformation.dataflow import MapExpansion
 from dace.transformation.interstate import InlineSDFG
+from dace.transformation.interstate import multistate_inline
 from dace.libraries.standard.nodes import Reduce
 import GPU_tiling_transformation
 from dace.sdfg import utils as sdutil
@@ -57,7 +58,7 @@ sdfg.add_array('__return', shape=[1], dtype=dace.float64)
 sdfg.add_symbol('MaxTs', stype= dace.int32)
 sdfg.add_symbol('GridDim', stype= dace.int32)
 sdfg.add_symbol('BlockDim', stype= dace.int32)
-sdfg.add_symbol('WarpSize', stype= dace.int32)
+# sdfg.add_symbol('WarpSize', stype= dace.int32)
 
 #-----------------------------------------------------------
 # initialize Return
@@ -112,6 +113,13 @@ sdfg.add_edge(multiplication_state, reduction_state, InterstateEdge())
 sdfg.expand_library_nodes()
 sdfg.apply_transformations_repeated(MapExpansion)
 
+# sdfg.view()
+#-----------------------------------------------------------
+# from dace.transformation import helpers
+# state = next(n for n in sdfg.nodes() if n.label == 'WarpReduction_SDFG')
+# helpers.nest_sdfg_control_flow(state.sdfg)
+#-----------------------------------------------------------
+
 #-----------------------------------------------------------
 # Here we try to apply the auto-tiling
 
@@ -120,8 +128,11 @@ state = next(n for n in sdfg.states() if n.label == 'Mult_state')
 mult_map = next(n for n in state.nodes() if isinstance(n, dace.nodes.MapEntry) and n.label == 'Mult_maps')
 GPU_tiling_transformation.GPU_Tiling.apply_to(sdfg, map_entry= mult_map)
 
-sdfg.view()
+# Putting the data onto the GPU, the maps GPU tiling creates are on the gpu
 
+for _, arr in sdfg.arrays.items():
+        if not arr.transient:
+            arr.storage = dace.StorageType.GPU_Global
 #-----------------------------------------------------------
 # This part inlines the reduction, merges state and overall simplifies the SDFG
 
@@ -131,32 +142,27 @@ StateFusion.apply_to(sdfg,
 
 sdfg.apply_transformations_repeated(StateFusion)
 
-sdfg.apply_transformations(InlineSDFG)
+inlines = sdfg.apply_transformations(multistate_inline.InlineMultistateSDFG)
+print(inlines)
+sdfg.view()
 
-#-----------------------------------------------------------
-# Putting it onto the GPU
 
-for _, arr in sdfg.arrays.items():
-        if not arr.transient:
-            arr.storage = dace.StorageType.GPU_Global
+# for state in sdfg.states():
+#     for n in state.nodes():
+#         # TODO: find a way to un-parametrize this, such that it can be applied before Auto-tile as well!!
+#         if isinstance(n, nodes.MapEntry) and "__i" in n.map.params:
+#             n.map.schedule = dace.dtypes.ScheduleType.GPU_Device
 
-for state in sdfg.states():
-    for n in state.nodes():
-        # TODO: find a way to un-parametrize this, such that it can be applied before Auto-tile as well!!
-        if isinstance(n, nodes.MapEntry) and "__i" in n.map.params:
-            n.map.schedule = dace.dtypes.ScheduleType.GPU_Device
-
-for state in sdfg.states():
-    for n in state.nodes():
-        if isinstance(n, nodes.MapEntry) and "__j" in n.map.params:
-            n.map.schedule = dace.dtypes.ScheduleType.GPU_ThreadBlock
+# for state in sdfg.states():
+#     for n in state.nodes():
+#         if isinstance(n, nodes.MapEntry) and "__j" in n.map.params:
+#             n.map.schedule = dace.dtypes.ScheduleType.GPU_ThreadBlock
 
 #-----------------------------------------------------------
 # Fusing the maps
 
 pattern = sdutil.node_path_graph(dace.nodes.MapExit, dace.nodes.AccessNode, dace.nodes.MapEntry)
 
-sdfg.view()
 
 while(len(list(pm.enumerate_matches(sdfg, pattern)))> 0):
     subgraph = next(n for n in pm.enumerate_matches(sdfg, pattern))
@@ -175,16 +181,19 @@ while(len(list(pm.enumerate_matches(sdfg, pattern)))> 0):
                     array = access_node,
                     second_map_entry = reduction_map_entry)
 
+    sdfg.view()
 sdfg.simplify()
 
 #-----------------------------------------------------------
 maxTs = min(blockDim*gridDim,sz)
 
-res = sdfg(A=A, B=B, __return=r, N=sz, MaxTs= maxTs, BlockDim=blockDim, GridDim=gridDim, WarpSize= 32)
+res = sdfg(A=A, B=B, __return=r, N=sz, MaxTs= maxTs, BlockDim = blockDim, GridDim = gridDim)
 
 
 print(res)
 
+print(checksum(A,B))
+print (res)
 print(checksum(A,B))
 assert(np.allclose(res, checksum(A,B)))
 

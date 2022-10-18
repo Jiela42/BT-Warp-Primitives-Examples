@@ -1,5 +1,6 @@
 import dace
 import cupy
+from dace.dtypes import ScheduleType
 from dace.symbolic import int_ceil
 import numpy as np
 
@@ -54,11 +55,13 @@ class GPU_Tiling(xf. SingleStateTransformation):
         
         i_map = nodes.Map(label ='GPU_map_i',
                           ndrange = subsets.Range([('0', 'Min(GridDim, int_ceil(' + str(para_N) +',BlockDim))-1', '1')]),
-                          params=[new_i])
+                          params=[new_i],
+                          schedule= dace.dtypes.ScheduleType.GPU_Device)
         
         j_map = nodes.Map(label= 'Block_map_j',
                           ndrange= subsets.Range([('0', 'BlockDim-1' , '1')]),
-                          params=[new_j])
+                          params=[new_j],
+                          schedule= dace.dtypes.ScheduleType.GPU_ThreadBlock)
 
         i_entry = nodes.MapEntry(i_map)
         j_entry = nodes.MapEntry(j_map)
