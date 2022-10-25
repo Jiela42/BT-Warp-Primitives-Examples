@@ -51,11 +51,18 @@ class GPU_Tiling(xf. SingleStateTransformation):
                 sdfg.add_symbol(symbol, dace.int32)
         
 
+        for s in ('BlockDim', 'GridDim'):
+            try:
+                sdfg.add_symbol(s, dace.int32)
+            except FileExistsError:
+                pass
+
         new_i = '__i' + old_para if old_para == '__i' else '__i'
         new_j = '__j' + old_para if old_para == '__j' else '__j'
         
         current_map = map_entry.map
-        current_map.range = subsets.Range([(new_i +'*BlockDim+' + new_j, str(para_N), 'MaxTs')])
+        current_map.range = subsets.Range([(new_i +'*BlockDim+' + new_j, str(para_N), 'BlockDim * GridDim')])
+        current_map.schedule = dace.ScheduleType.Sequential
         
         para_N += 1
         
@@ -75,27 +82,38 @@ class GPU_Tiling(xf. SingleStateTransformation):
         i_exit = nodes.MapExit(i_map)
         j_exit = nodes.MapExit(j_map)
         
-        for edge in graph.in_edges(map_entry):
-            graph.remove_edge_and_connectors(edge)
+        for edge in graph.out_edges(map_entry):
+            # graph.remove_edge_and_connectors(edge)
             # conn_name = 'IN_' + edge.src.label
             # i_entry.add_in_connector(conn_name)
-            graph.add_memlet_path(edge.src,
+            src = graph.memlet_path(edge)[0].src
+            src_conn = graph.memlet_path(edge)[0].src_conn
+            graph.add_memlet_path(
+                              src,
                               i_entry,
                               j_entry,
                               map_entry,
+                              edge.dst,
                               memlet=edge.data,
-                              src_conn= edge.src_conn,
-                              dst_conn = edge.dst_conn)
+                              src_conn=src_conn,
+                              dst_conn=edge.dst_conn)
+            graph.remove_memlet_path(edge)
         
-        for edge in graph.out_edges(map_exit):
-            graph.remove_edge(edge)
-            graph.add_memlet_path(map_exit,
+        for edge in graph.in_edges(map_exit):
+            dst = graph.memlet_path(edge)[-1].dst
+            dst_conn = graph.memlet_path(edge)[-1].dst_conn
+            graph.add_memlet_path(
+                                edge.src,
+                                map_exit,
                                 j_exit,
                                 i_exit,
-                                edge.dst,                                      
+                                dst,                                      
                                 src_conn=edge.src_conn,
                                 memlet= edge.data,
-                                dst_conn=edge.dst_conn)
+                                dst_conn=dst_conn)
+            graph.remove_memlet_path(edge)
+
+        # sdfg.view()
             
         
         return [map_entry] + [i_entry, j_entry]
