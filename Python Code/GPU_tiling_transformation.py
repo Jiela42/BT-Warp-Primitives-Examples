@@ -42,8 +42,14 @@ class GPU_Tiling(xf. SingleStateTransformation):
         
         para_N = map_entry.range[0][1]
         
-        # print(para_N[0][1])
-        # print(type(para_N[0][1]))
+        default_symbols = {'WarpSize': 32, 'BlockDim': 256, 'GridDim': 2048, 'N': para_N, 'MaxTs': 'BlockDim * GridDim'}
+        symbols = {}
+        
+        for symbol in default_symbols:
+            if symbol not in sdfg.symbols:
+                symbols[symbol] = default_symbols[symbol]
+                sdfg.add_symbol(symbol, dace.int32)
+        
 
         new_i = '__i' + old_para if old_para == '__i' else '__i'
         new_j = '__j' + old_para if old_para == '__j' else '__j'

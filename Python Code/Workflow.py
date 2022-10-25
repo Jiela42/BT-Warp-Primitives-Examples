@@ -110,8 +110,10 @@ reduction_state.add_edge(red, None, aRet, None, dace.Memlet.from_array('__return
 sdfg.add_edge(init_state, multiplication_state, InterstateEdge())
 sdfg.add_edge(multiplication_state, reduction_state, InterstateEdge())
 
+sdfg.view()
 sdfg.expand_library_nodes()
 sdfg.apply_transformations_repeated(MapExpansion)
+
 
 # sdfg.view()
 #-----------------------------------------------------------
@@ -146,6 +148,9 @@ inlines = sdfg.apply_transformations(multistate_inline.InlineMultistateSDFG)
 print(inlines)
 sdfg.view()
 
+sdfg.all_sdfgs_recursive
+
+sdfg.simplify()
 
 # for state in sdfg.states():
 #     for n in state.nodes():

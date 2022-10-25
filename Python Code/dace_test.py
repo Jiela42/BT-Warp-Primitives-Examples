@@ -10,7 +10,7 @@ def gaussInit(a):
         a[i] = i % 131                  # The modulo ensures the numbers stay reasonably small and the prime makes accidental multiples a lot less likely
 
 N = dace.symbol('N')
-sz = 80000
+sz = 100
 
 
 
@@ -49,7 +49,7 @@ def KernelCall(state):
         out[0] = double(0);
     }
     double sum = double(0);
-    for (int id = i * 1024 + j; id < N; id += blockDim.x * gridDim.x) {
+    for (int id = i * 256 + j; id < N; id += blockDim.x * gridDim.x) {
         sum += in1[id] * in2[id];
     }
     for (int offset = warpSize/2; offset > 0; offset /= 2) {
@@ -62,7 +62,7 @@ def KernelCall(state):
 
     tasklet, me, mx = state.add_mapped_tasklet(
         name='callingKernel',
-        map_ranges={'i': '0:min(int_ceil(N, 1024), 2048)', 'j': '0:1024'},            # i is blockIdx.x and j is threadIdx.x
+        map_ranges={'i': '0:min(int_ceil(N, 256), 2048)', 'j': '0:256'},            # i is blockIdx.x and j is threadIdx.x
         inputs={'in1': dace.Memlet('A[0:N]'), 'in2': dace.Memlet('B[0:N]')},
         outputs={'out': dace.Memlet('__return[0]')},
         code=tasklet_code,
