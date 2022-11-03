@@ -10,35 +10,44 @@ def gaussInit(a):
         a[i] = i % 131                  # The modulo ensures the numbers stay reasonably small and the prime makes accidental multiples a lot less likely
 
 N = dace.symbol('N')
-sz = 100
+sz = 10000000
 
 
 
-# @dace.program
-# def inner_product_python(A: dace.float64[N], B: dace.float64[N]):
-#     return np.add.reduce(A * B)
+@dace.program
+def inner_product_python(A: dace.float64[N], B: dace.float64[N]):
+    return np.add.reduce(A * B)
 
 
-# sdfg = inner_product_python.to_sdfg(simplify=True)
-# for _, arr in sdfg.arrays.items():
-#     if not arr.transient:
-#         arr.storage = dace.StorageType.GPU_Global
-# sdfg.apply_gpu_transformations()
-# from map_reduce_gpu import MapReduceFusionGPU
-# sdfg.apply_transformations(MapReduceFusionGPU)
-# # auto.auto_optimize(sdfg, dace.DeviceType.GPU)
+sdfg = inner_product_python.to_sdfg(simplify=True)
+for _, arr in sdfg.arrays.items():
+    if not arr.transient:
+        arr.storage = dace.StorageType.GPU_Global
+sdfg.apply_gpu_transformations()
+from map_reduce_gpu import MapReduceFusionGPU
+sdfg.apply_transformations(MapReduceFusionGPU)
+# auto.auto_optimize(sdfg, dace.DeviceType.GPU)
 
 
-# A = np.ones((sz))
-# gaussInit(A)
-# gA = cupy.asarray(A)
-# B = np.ones((sz))
-# gaussInit(B)
-# gB = cupy.asarray(B)
+A = np.ones((sz))
+gaussInit(A)
+gA = cupy.asarray(A)
+B = np.ones((sz))
+gaussInit(B)
+gB = cupy.asarray(B)
 
-# res = sdfg(A=gA, B=gB, N=sz, BlockDim=64, GridDim=65536)
-# print(res)
+res = sdfg(A=gA, B=gB, N=sz, BlockDim=64, GridDim=65536)
+print(res)
 # print(np.add.reduce(A*B))
+
+sdfg2 = inner_product_python.to_sdfg(simplify=True)
+sdfg2._name += '_auto'
+for _, arr in sdfg2.arrays.items():
+    if not arr.transient:
+        arr.storage = dace.StorageType.GPU_Global
+auto.auto_optimize(sdfg2, dace.DeviceType.GPU)
+res = sdfg2(A=gA, B=gB, N=sz)
+print(res)
 
 arows, acols = dace.symbol('arows'), dace.symbol('acols')
 nnz, hcols = dace.symbol('nnz'), dace.symbol('hcols')
