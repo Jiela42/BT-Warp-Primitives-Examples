@@ -77,8 +77,8 @@ class MapReduceFusionGPU(tr.SingleStateTransformation):
         if tout_memlet.subset != rin_memlet.subset:
             return False
 
-        # NOTE: We constrain the transformation to match 1-D Map with N-D -> (N-1)-D reduction.
-        if len(tmap_exit.map.params) > 1:
+        # NOTE: We constrain the transformation to match 1-D or 2-D Map with N-D -> (N-1)-D reduction.
+        if len(tmap_exit.map.params) > 2:
             return False
         out_desc = sdfg.arrays[out_array.data]
         len_output = 0 if isinstance(out_desc, data.Scalar) else len(out_desc.shape)
@@ -95,6 +95,7 @@ class MapReduceFusionGPU(tr.SingleStateTransformation):
         in_array = self.in_array
         reduce_node = self.reduce
         out_array = self.out_array
+        is_unidim = (len(tmap_exit.map.params) == 1)
 
         # Add CUDA-related symbols and constants
         for s in ('BlockDim', 'GridDim'):
@@ -137,21 +138,29 @@ class MapReduceFusionGPU(tr.SingleStateTransformation):
 
         # Get reductions Maps
         reduction_entries = []
+        rednum = 1 + (1 if is_unidim else 2)
         for i, e in enumerate(graph.memlet_path(graph.out_edges(in_array)[0])):
             reduction_entries.append(e.dst)
-            if i == 2:
+            if i == rednum:
                 break
-        rientry, rjentry, rtentry = reduction_entries
 
         # Tile Map
         from GPU_tiling_transformation import GPU_Tiling
-        mt_entry, mi_entry, mj_entry = GPU_Tiling.apply_to(sdfg, map_entry=tmap_entry)
+        if is_unidim:
+            rientry, rjentry, rtentry = reduction_entries
+            mt_entry, mi_entry, mj_entry = GPU_Tiling.apply_to(sdfg, map_entry=tmap_entry)
+        else:
+            rientry, rjentry, rkentry, rtentry = reduction_entries
+            mt_entry, mi_entry, mj_entry, mk_entry = GPU_Tiling.apply_to(sdfg, map_entry=tmap_entry)
 
 
         MapFusion.apply_to(sdfg, first_map_exit=graph.exit_node(mi_entry), array=in_array, second_map_entry=rientry)
         access = graph.in_edges(rjentry)[0].src
         MapFusion.apply_to(sdfg, first_map_exit=graph.exit_node(mj_entry), array=access, second_map_entry=rjentry)
         access = graph.in_edges(rtentry)[0].src
+        if not is_unidim:
+            MapFusion.apply_to(sdfg, first_map_exit=graph.exit_node(mk_entry), array=access, second_map_entry=rkentry)
+            access = graph.in_edges(rtentry)[0].src
         MapFusion.apply_to(sdfg, first_map_exit=graph.exit_node(mt_entry), array=access, second_map_entry=rtentry)
         
         # NOTE: Hacky, need to investigate why Map params become symbols in MapFusion
